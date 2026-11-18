@@ -10,6 +10,13 @@ android {
     namespace = "com.fwr.app"
     compileSdk = 35
 
+    val localProps = Properties().apply {
+        val localPropsFile = rootProject.file("local.properties")
+        if (localPropsFile.isFile) {
+            localPropsFile.inputStream().use { load(it) }
+        }
+    }
+
     defaultConfig {
         applicationId = "com.fwr.app"
         minSdk = 26
@@ -22,12 +29,6 @@ android {
             useSupportLibrary = true
         }
 
-        val localProps = Properties().apply {
-            val localPropsFile = rootProject.file("local.properties")
-            if (localPropsFile.isFile) {
-                localPropsFile.inputStream().use { load(it) }
-            }
-        }
         val extraOAuthScheme = localProps.getProperty("oauth.extra.scheme", "fwr")
             .trim()
             .ifEmpty { "fwr" }
@@ -48,8 +49,24 @@ android {
         )
     }
 
+    signingConfigs {
+        create("release") {
+            val storePath = localProps.getProperty("release.storeFile")?.trim()
+            if (!storePath.isNullOrEmpty()) {
+                storeFile = rootProject.file(storePath)
+                storePassword = localProps.getProperty("release.storePassword")
+                keyAlias = localProps.getProperty("release.keyAlias")
+                keyPassword = localProps.getProperty("release.keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            val releaseSigning = signingConfigs.getByName("release")
+            if (releaseSigning.storeFile?.exists() == true) {
+                signingConfig = releaseSigning
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
