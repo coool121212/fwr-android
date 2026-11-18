@@ -73,6 +73,8 @@ import com.fwr.app.data.network.RedditNetworkClient
 import com.fwr.app.data.notifications.UnreadMailScheduler
 import com.fwr.app.data.notifications.UnreadMailWorker
 import com.fwr.app.data.prefs.UserPreferencesRepository
+import com.fwr.app.data.update.AppUpdateManager
+import com.fwr.app.ui.update.UpdateDialogHost
 import com.fwr.app.ui.comments.CommentsScreen
 import com.fwr.app.ui.components.FeedScreen
 import com.fwr.app.ui.feed.FeedUiState
@@ -145,6 +147,9 @@ class MainActivity : ComponentActivity() {
         }
 
         handleIncomingOAuthIntent(intent)
+
+        // Check GitHub Releases for a newer build (throttled, respects the user setting)
+        AppUpdateManager.checkOnLaunch(applicationContext)
 
         enableEdgeToEdge()
         setContent {
@@ -456,6 +461,9 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                         }
+
+                        // In-app updater prompt (GitHub Releases)
+                        UpdateDialogHost()
                     }
                 }
             }

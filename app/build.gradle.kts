@@ -35,6 +35,13 @@ android {
         val extraOAuthHost = localProps.getProperty("oauth.extra.host", "reddit-oauth")
             .trim()
             .ifEmpty { "reddit-oauth" }
+        // GitHub "owner/repo" used by the in-app updater to look up the latest release.
+        // Forks can override this with `update.repo=owner/repo` in local.properties.
+        val updateRepo = localProps.getProperty("update.repo", "coool121212/fwr-android")
+            .trim()
+            .ifEmpty { "coool121212/fwr-android" }
+        buildConfigField("String", "UPDATE_GITHUB_REPO", "\"$updateRepo\"")
+
         manifestPlaceholders["extraOAuthScheme"] = extraOAuthScheme
         manifestPlaceholders["extraOAuthHost"] = extraOAuthHost
         buildConfigField(

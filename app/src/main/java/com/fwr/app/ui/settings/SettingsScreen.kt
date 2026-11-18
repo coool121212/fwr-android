@@ -86,7 +86,10 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.Coil
 import coil.annotation.ExperimentalCoilApi
+import com.fwr.app.BuildConfig
 import com.fwr.app.data.auth.RedditOAuthManager
+import com.fwr.app.data.update.AppUpdateManager
+import com.fwr.app.data.update.UpdateCheckResult
 import com.fwr.app.data.network.RedditNetworkClient
 import com.fwr.app.data.notifications.UnreadMailScheduler
 import com.fwr.app.data.prefs.UserPreferencesRepository
@@ -160,6 +163,9 @@ fun SettingsScreen(
     val clickedPostIds by preferencesRepository.clickedPostIds.collectAsStateWithLifecycle()
     val searchHistory by preferencesRepository.searchHistory.collectAsStateWithLifecycle()
     val savedDrafts by preferencesRepository.savedDrafts.collectAsStateWithLifecycle()
+    val autoUpdateCheck by AppUpdateManager.autoCheckEnabled.collectAsStateWithLifecycle()
+    var checkingForUpdates by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { AppUpdateManager.init(context) }
 
     var currentSubScreen by remember {
         mutableStateOf(
@@ -1454,8 +1460,39 @@ fun SettingsScreen(
                 RifSettingsSubScreen.ABOUT -> {
                     RifListPreferenceRow(
                         title = "FWR (Fun With Reddit)",
-                        currentValue = "Version 0.4.0-alpha (build 4) — Open-source Android client",
+                        currentValue = "Version ${BuildConfig.VERSION_NAME} (build ${BuildConfig.VERSION_CODE}) — Open-source Android client",
                         onClick = {}
+                    )
+                    RifListPreferenceRow(
+                        title = "Check for updates",
+                        currentValue = if (checkingForUpdates) {
+                            "Checking GitHub Releases…"
+                        } else {
+                            "Look for a newer release on GitHub"
+                        },
+                        onClick = {
+                            if (checkingForUpdates) return@RifListPreferenceRow
+                            checkingForUpdates = true
+                            coroutineScope.launch {
+                                val result = AppUpdateManager.checkForUpdates(context, manual = true)
+                                checkingForUpdates = false
+                                when (result) {
+                                    is UpdateCheckResult.Available -> Unit // dialog is shown globally
+                                    UpdateCheckResult.UpToDate, UpdateCheckResult.Skipped ->
+                                        Toast.makeText(context, "You're on the latest version", Toast.LENGTH_SHORT).show()
+                                    is UpdateCheckResult.Error ->
+                                        Toast.makeText(context, "Update check failed: ${result.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    )
+                    RifCheckBoxPreferenceRow(
+                        title = "Automatically check for updates",
+                        summary = "Show a prompt when a new version is released on GitHub",
+                        checked = autoUpdateCheck,
+                        onCheckedChange = { checked ->
+                            AppUpdateManager.setAutoCheckEnabled(context, checked)
+                        }
                     )
                     RifListPreferenceRow(
                         title = "License",
