@@ -41,6 +41,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -159,8 +160,17 @@ fun FeedScreen(
     val authPrefs by prefsRepo.authPreferences.collectAsStateWithLifecycle()
     val userAccessToken = authPrefs.userAccessToken
     val isLoggedIn = !userAccessToken.isNullOrBlank()
+    val hasConfiguredClientId = authPrefs.clientId.isNotBlank()
     val activeUsername = authPrefs.username?.takeIf { it.isNotBlank() } ?: "guest"
     var showQuitConfirmDialog by remember { mutableStateOf(false) }
+
+    LaunchedEffect(authPrefs.clientId, userAccessToken) {
+        if ((authPrefs.clientId.isNotBlank() || !userAccessToken.isNullOrBlank()) &&
+            uiState is FeedUiState.Error
+        ) {
+            viewModel.loadInitialFeed(forceRefresh = true)
+        }
+    }
 
     LaunchedEffect(userAccessToken, authPrefs.username) {
         if (!userAccessToken.isNullOrBlank() && authPrefs.username.isNullOrBlank()) {
@@ -1219,6 +1229,10 @@ fun FeedScreen(
                     }
 
                     is FeedUiState.Error -> {
+                        val isKeyless403 = !hasConfiguredClientId &&
+                            !isLoggedIn &&
+                            (state.message.contains("403") || state.message.contains("www.reddit.com"))
+
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -1226,14 +1240,47 @@ fun FeedScreen(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center
                         ) {
-                            Text(
-                                text = state.message,
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = RwfPalette.VoteArrowUpvoteRed
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Button(onClick = { viewModel.loadInitialFeed() }) {
-                                Text(text = "Retry")
+                            if (isKeyless403) {
+                                Text(
+                                    text = "OAuth Client ID Required (HTTP 403)",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = RwfPalette.TitleUnreadDark
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Reddit blocks unauthenticated keyless requests to www.reddit.com/*.json. Enter a Reddit OAuth Client ID and Redirect URI in Settings → BYOK & API Credentials to browse via oauth.reddit.com.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = RwfPalette.MetadataTextDark
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = state.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = RwfPalette.VoteArrowUpvoteRed
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Button(onClick = { openSettings() }) {
+                                    Text(text = "Open Settings (BYOK & API Credentials)")
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedButton(onClick = { viewModel.loadInitialFeed(forceRefresh = true) }) {
+                                    Text(text = "Retry")
+                                }
+                            } else {
+                                Text(
+                                    text = state.message,
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = RwfPalette.VoteArrowUpvoteRed
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Button(onClick = { viewModel.loadInitialFeed(forceRefresh = true) }) {
+                                    Text(text = "Retry")
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedButton(onClick = { openSettings() }) {
+                                    Text(text = "Open Settings")
+                                }
                             }
                         }
                     }
