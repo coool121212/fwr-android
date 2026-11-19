@@ -29,9 +29,18 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import org.json.JSONArray
-import org.json.JSONObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.put
 import java.io.IOException
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicReference
 
 private val Context.fwrDataStore: DataStore<Preferences> by preferencesDataStore(
@@ -86,6 +95,18 @@ data class RifAppSettings(
     val prefetchThumbnails: String = "Wi-Fi only",
     val autoLoadComments: Boolean = true,
     val prefetchNsfw: Boolean = false
+)
+
+/**
+ * Domain rule controlling which hosts open directly in external apps / external browser
+ * instead of inside FWR's built-in browser or media viewer.
+ */
+@Immutable
+data class ExternalBrowserRule(
+    val host: String,
+    val includeSubdomains: Boolean = true,
+    val enabled: Boolean = true,
+    val alwaysExternal: Boolean = false
 )
 
 /**
@@ -265,6 +286,17 @@ class UserPreferencesRepository(
     val savedDrafts: StateFlow<List<String>> = preferencesFlow
         .map { prefs -> decodeOrderedList(prefs[KEY_SAVED_DRAFTS]) }
         .stateIn(scope = externalScope, started = SharingStarted.Eagerly, initialValue = emptyList())
+
+    val externalBrowserRules: StateFlow<List<ExternalBrowserRule>> = preferencesFlow
+        .map { prefs ->
+            val raw = prefs[KEY_EXTERNAL_BROWSER_RULES]
+            if (raw == null) DEFAULT_EXTERNAL_BROWSER_RULES else decodeExternalBrowserRules(raw)
+        }
+        .stateIn(
+            scope = externalScope,
+            started = SharingStarted.Eagerly,
+            initialValue = DEFAULT_EXTERNAL_BROWSER_RULES
+        )
 
     val authPreferences: StateFlow<UserAuthPreferences> = preferencesFlow
         .map { prefs ->
@@ -676,95 +708,162 @@ class UserPreferencesRepository(
         }
     }
 
+    suspend fun upsertExternalBrowserRule(rule: ExternalBrowserRule) {
+        val cleanHost = normalizeExternalHost(rule.host)
+        if (cleanHost.isEmpty()) return
+        val normalizedRule = rule.copy(host = cleanHost)
+        dataStore.edit { prefs ->
+            val current = prefs[KEY_EXTERNAL_BROWSER_RULES]?.let(::decodeExternalBrowserRules)
+                ?: DEFAULT_EXTERNAL_BROWSER_RULES
+            val mutable = current.toMutableList()
+            val existingIdx = mutable.indexOfFirst { it.host.equals(cleanHost, ignoreCase = true) }
+            if (existingIdx >= 0) {
+                mutable[existingIdx] = normalizedRule
+            } else {
+                mutable.add(0, normalizedRule)
+            }
+            prefs[KEY_EXTERNAL_BROWSER_RULES] = encodeExternalBrowserRules(mutable)
+        }
+    }
+
+    suspend fun toggleExternalBrowserRule(host: String, enabled: Boolean) {
+        val cleanHost = normalizeExternalHost(host)
+        if (cleanHost.isEmpty()) return
+        dataStore.edit { prefs ->
+            val current = prefs[KEY_EXTERNAL_BROWSER_RULES]?.let(::decodeExternalBrowserRules)
+                ?: DEFAULT_EXTERNAL_BROWSER_RULES
+            val updated = current.map { existing ->
+                if (existing.host.equals(cleanHost, ignoreCase = true)) {
+                    existing.copy(enabled = enabled)
+                } else {
+                    existing
+                }
+            }
+            prefs[KEY_EXTERNAL_BROWSER_RULES] = encodeExternalBrowserRules(updated)
+        }
+    }
+
+    suspend fun removeExternalBrowserRule(host: String) {
+        val cleanHost = normalizeExternalHost(host)
+        if (cleanHost.isEmpty()) return
+        dataStore.edit { prefs ->
+            val current = prefs[KEY_EXTERNAL_BROWSER_RULES]?.let(::decodeExternalBrowserRules)
+                ?: DEFAULT_EXTERNAL_BROWSER_RULES
+            val updated = current.filterNot { it.host.equals(cleanHost, ignoreCase = true) }
+            prefs[KEY_EXTERNAL_BROWSER_RULES] = encodeExternalBrowserRules(updated)
+        }
+    }
+
+    suspend fun resetExternalBrowserRulesToDefaults() {
+        dataStore.edit { prefs ->
+            prefs[KEY_EXTERNAL_BROWSER_RULES] = encodeExternalBrowserRules(DEFAULT_EXTERNAL_BROWSER_RULES)
+        }
+    }
+
     suspend fun exportBackupJson(): String {
         val prefs = preferencesFlow.first()
         val settings = getAppSettingsSnapshot()
-        val root = JSONObject()
-        val settingsObj = JSONObject().apply {
-            put("confirmQuit", settings.confirmQuit)
-            put("backGoesHome", settings.backGoesHome)
-            put("endlessReddit", settings.endlessReddit)
-            put("displayScale", settings.displayScale)
-            put("uiScalePercent", settings.uiScalePercent)
-            put("postTitleScalePercent", settings.postTitleScalePercent)
-            put("commentTextScalePercent", settings.commentTextScalePercent)
-            put("thumbnailScalePercent", settings.thumbnailScalePercent)
-            put("preferExternalBrowser", settings.preferExternalBrowser)
-            put("askDownloadLocation", settings.askDownloadLocation)
-            put("darkTheme", settings.darkTheme)
-            put("amoledBlackBackground", settings.amoledBlackBackground)
-            put("cardsView", settings.cardsView)
-            put("fontSize", settings.fontSize)
-            put("leftHandedMode", settings.leftHandedMode)
-            put("showLinkFlair", settings.showLinkFlair)
-            put("showCommentGuideLines", settings.showCommentGuideLines)
-            put("inboxBadgeEnabled", settings.inboxBadgeEnabled)
-            put("notificationInterval", settings.notificationInterval)
-            put("obscureRecentApps", settings.obscureRecentApps)
-            put("webThumbnailsMode", settings.webThumbnailsMode)
-            put("nsfwAllowed", settings.nsfwAllowed)
-            put("labelNsfw", settings.labelNsfw)
-            put("defaultCommentSort", settings.defaultCommentSort)
-            put("loadThumbnailsMode", settings.loadThumbnailsMode)
-            put("prefetchThumbnails", settings.prefetchThumbnails)
-            put("autoLoadComments", settings.autoLoadComments)
-            put("prefetchNsfw", settings.prefetchNsfw)
-            put("showInlineImages", settings.showInlineImages)
-            put("showCommentNavBar", settings.showCommentNavBar)
+        val exportRules = prefs[KEY_EXTERNAL_BROWSER_RULES]?.let(::decodeExternalBrowserRules)
+            ?: DEFAULT_EXTERNAL_BROWSER_RULES
+        val root = buildJsonObject {
+            put("version", 1)
+            put(
+                "appSettings",
+                buildJsonObject {
+                    put("confirmQuit", settings.confirmQuit)
+                    put("backGoesHome", settings.backGoesHome)
+                    put("endlessReddit", settings.endlessReddit)
+                    put("displayScale", settings.displayScale)
+                    put("uiScalePercent", settings.uiScalePercent)
+                    put("postTitleScalePercent", settings.postTitleScalePercent)
+                    put("commentTextScalePercent", settings.commentTextScalePercent)
+                    put("thumbnailScalePercent", settings.thumbnailScalePercent)
+                    put("preferExternalBrowser", settings.preferExternalBrowser)
+                    put("askDownloadLocation", settings.askDownloadLocation)
+                    put("darkTheme", settings.darkTheme)
+                    put("amoledBlackBackground", settings.amoledBlackBackground)
+                    put("cardsView", settings.cardsView)
+                    put("fontSize", settings.fontSize)
+                    put("leftHandedMode", settings.leftHandedMode)
+                    put("showLinkFlair", settings.showLinkFlair)
+                    put("showCommentGuideLines", settings.showCommentGuideLines)
+                    put("inboxBadgeEnabled", settings.inboxBadgeEnabled)
+                    put("notificationInterval", settings.notificationInterval)
+                    put("obscureRecentApps", settings.obscureRecentApps)
+                    put("webThumbnailsMode", settings.webThumbnailsMode)
+                    put("nsfwAllowed", settings.nsfwAllowed)
+                    put("labelNsfw", settings.labelNsfw)
+                    put("defaultCommentSort", settings.defaultCommentSort)
+                    put("loadThumbnailsMode", settings.loadThumbnailsMode)
+                    put("prefetchThumbnails", settings.prefetchThumbnails)
+                    put("autoLoadComments", settings.autoLoadComments)
+                    put("prefetchNsfw", settings.prefetchNsfw)
+                    put("showInlineImages", settings.showInlineImages)
+                    put("showCommentNavBar", settings.showCommentNavBar)
+                }
+            )
+            put("subscribedSubreddits", stringListToJsonArray(prefs[KEY_SUBSCRIBED_SUBREDDITS].orEmpty().sorted()))
+            put("favoriteSubreddits", stringListToJsonArray(prefs[KEY_FAVORITE_SUBREDDITS].orEmpty().sorted()))
+            put("blockedSubreddits", stringListToJsonArray(prefs[KEY_BLOCKED_SUBREDDITS].orEmpty().sorted()))
+            put("keywordFilters", stringListToJsonArray(prefs[KEY_KEYWORD_FILTERS].orEmpty().sorted()))
+            put("savedDrafts", stringListToJsonArray(decodeOrderedList(prefs[KEY_SAVED_DRAFTS])))
+            put("externalBrowserRules", externalBrowserRulesToJsonArray(exportRules))
         }
-        root.put("version", 1)
-        root.put("appSettings", settingsObj)
-        root.put("subscribedSubreddits", JSONArray(prefs[KEY_SUBSCRIBED_SUBREDDITS].orEmpty().sorted()))
-        root.put("favoriteSubreddits", JSONArray(prefs[KEY_FAVORITE_SUBREDDITS].orEmpty().sorted()))
-        root.put("blockedSubreddits", JSONArray(prefs[KEY_BLOCKED_SUBREDDITS].orEmpty().sorted()))
-        root.put("keywordFilters", JSONArray(prefs[KEY_KEYWORD_FILTERS].orEmpty().sorted()))
-        root.put("savedDrafts", JSONArray(decodeOrderedList(prefs[KEY_SAVED_DRAFTS])))
-        return root.toString(2)
+        return prettyBackupJson.encodeToString(JsonObject.serializer(), root)
     }
 
     suspend fun importBackupJson(rawJson: String): Boolean {
         return runCatching {
-            val root = JSONObject(rawJson)
-            val s = root.optJSONObject("appSettings")
+            val root = Json.parseToJsonElement(rawJson) as? JsonObject ?: return false
+            val s = root["appSettings"] as? JsonObject
             if (s != null) {
+                fun optBool(key: String, default: Boolean): Boolean =
+                    (s[key] as? JsonPrimitive)?.booleanOrNull ?: default
+
+                fun optInt(key: String, default: Int): Int =
+                    (s[key] as? JsonPrimitive)?.intOrNull ?: default
+
+                fun optStr(key: String, default: String): String =
+                    (s[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: default
+
                 updateAppSettings { current ->
                     current.copy(
-                        confirmQuit = s.optBoolean("confirmQuit", current.confirmQuit),
-                        backGoesHome = s.optBoolean("backGoesHome", current.backGoesHome),
-                        endlessReddit = s.optBoolean("endlessReddit", current.endlessReddit),
-                        displayScale = s.optString("displayScale", current.displayScale),
-                        uiScalePercent = s.optInt("uiScalePercent", current.uiScalePercent),
-                        postTitleScalePercent = s.optInt("postTitleScalePercent", current.postTitleScalePercent),
-                        commentTextScalePercent = s.optInt("commentTextScalePercent", current.commentTextScalePercent),
-                        thumbnailScalePercent = s.optInt("thumbnailScalePercent", current.thumbnailScalePercent),
-                        preferExternalBrowser = s.optBoolean("preferExternalBrowser", current.preferExternalBrowser),
-                        askDownloadLocation = s.optBoolean("askDownloadLocation", current.askDownloadLocation),
-                        darkTheme = s.optBoolean("darkTheme", current.darkTheme),
-                        amoledBlackBackground = s.optBoolean("amoledBlackBackground", current.amoledBlackBackground),
-                        cardsView = s.optBoolean("cardsView", current.cardsView),
-                        fontSize = s.optString("fontSize", current.fontSize),
-                        leftHandedMode = s.optBoolean("leftHandedMode", current.leftHandedMode),
-                        showLinkFlair = s.optBoolean("showLinkFlair", current.showLinkFlair),
-                        showCommentGuideLines = s.optBoolean("showCommentGuideLines", current.showCommentGuideLines),
-                        inboxBadgeEnabled = s.optBoolean("inboxBadgeEnabled", current.inboxBadgeEnabled),
-                        notificationInterval = s.optString("notificationInterval", current.notificationInterval),
-                        obscureRecentApps = s.optBoolean("obscureRecentApps", current.obscureRecentApps),
-                        webThumbnailsMode = s.optString("webThumbnailsMode", current.webThumbnailsMode),
-                        nsfwAllowed = s.optBoolean("nsfwAllowed", current.nsfwAllowed),
-                        labelNsfw = s.optBoolean("labelNsfw", current.labelNsfw),
-                        defaultCommentSort = s.optString("defaultCommentSort", current.defaultCommentSort),
-                        loadThumbnailsMode = s.optString("loadThumbnailsMode", current.loadThumbnailsMode),
-                        prefetchThumbnails = s.optString("prefetchThumbnails", current.prefetchThumbnails),
-                        autoLoadComments = s.optBoolean("autoLoadComments", current.autoLoadComments),
-                        prefetchNsfw = s.optBoolean("prefetchNsfw", current.prefetchNsfw),
-                        showInlineImages = s.optBoolean("showInlineImages", current.showInlineImages),
-                        showCommentNavBar = s.optBoolean("showCommentNavBar", current.showCommentNavBar)
+                        confirmQuit = optBool("confirmQuit", current.confirmQuit),
+                        backGoesHome = optBool("backGoesHome", current.backGoesHome),
+                        endlessReddit = optBool("endlessReddit", current.endlessReddit),
+                        displayScale = optStr("displayScale", current.displayScale),
+                        uiScalePercent = optInt("uiScalePercent", current.uiScalePercent),
+                        postTitleScalePercent = optInt("postTitleScalePercent", current.postTitleScalePercent),
+                        commentTextScalePercent = optInt("commentTextScalePercent", current.commentTextScalePercent),
+                        thumbnailScalePercent = optInt("thumbnailScalePercent", current.thumbnailScalePercent),
+                        preferExternalBrowser = optBool("preferExternalBrowser", current.preferExternalBrowser),
+                        askDownloadLocation = optBool("askDownloadLocation", current.askDownloadLocation),
+                        darkTheme = optBool("darkTheme", current.darkTheme),
+                        amoledBlackBackground = optBool("amoledBlackBackground", current.amoledBlackBackground),
+                        cardsView = optBool("cardsView", current.cardsView),
+                        fontSize = optStr("fontSize", current.fontSize),
+                        leftHandedMode = optBool("leftHandedMode", current.leftHandedMode),
+                        showLinkFlair = optBool("showLinkFlair", current.showLinkFlair),
+                        showCommentGuideLines = optBool("showCommentGuideLines", current.showCommentGuideLines),
+                        inboxBadgeEnabled = optBool("inboxBadgeEnabled", current.inboxBadgeEnabled),
+                        notificationInterval = optStr("notificationInterval", current.notificationInterval),
+                        obscureRecentApps = optBool("obscureRecentApps", current.obscureRecentApps),
+                        webThumbnailsMode = optStr("webThumbnailsMode", current.webThumbnailsMode),
+                        nsfwAllowed = optBool("nsfwAllowed", current.nsfwAllowed),
+                        labelNsfw = optBool("labelNsfw", current.labelNsfw),
+                        defaultCommentSort = optStr("defaultCommentSort", current.defaultCommentSort),
+                        loadThumbnailsMode = optStr("loadThumbnailsMode", current.loadThumbnailsMode),
+                        prefetchThumbnails = optStr("prefetchThumbnails", current.prefetchThumbnails),
+                        autoLoadComments = optBool("autoLoadComments", current.autoLoadComments),
+                        prefetchNsfw = optBool("prefetchNsfw", current.prefetchNsfw),
+                        showInlineImages = optBool("showInlineImages", current.showInlineImages),
+                        showCommentNavBar = optBool("showCommentNavBar", current.showCommentNavBar)
                     )
                 }
             }
             fun readJsonArrayStrings(key: String): List<String>? {
-                val arr = root.optJSONArray(key) ?: return null
-                return List(arr.length()) { idx -> arr.optString(idx) }.filter { it.isNotBlank() }
+                val arr = root[key] as? JsonArray ?: return null
+                return arr.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotBlank) }
             }
             dataStore.edit { prefs ->
                 readJsonArrayStrings("subscribedSubreddits")?.let {
@@ -782,24 +881,84 @@ class UserPreferencesRepository(
                 readJsonArrayStrings("savedDrafts")?.let {
                     prefs[KEY_SAVED_DRAFTS] = encodeOrderedList(it.take(25))
                 }
+                (root["externalBrowserRules"] as? JsonArray)?.let { arr ->
+                    prefs[KEY_EXTERNAL_BROWSER_RULES] = encodeExternalBrowserRules(
+                        decodeExternalBrowserRulesArray(arr)
+                    )
+                }
             }
             true
         }.getOrDefault(false)
     }
 
+    private fun decodeExternalBrowserRules(raw: String): List<ExternalBrowserRule> {
+        return runCatching {
+            val arr = Json.parseToJsonElement(raw) as? JsonArray ?: return DEFAULT_EXTERNAL_BROWSER_RULES
+            decodeExternalBrowserRulesArray(arr)
+        }.getOrElse { DEFAULT_EXTERNAL_BROWSER_RULES }
+    }
+
+    private fun decodeExternalBrowserRulesArray(arr: JsonArray): List<ExternalBrowserRule> {
+        val result = ArrayList<ExternalBrowserRule>(arr.size)
+        for (element in arr) {
+            val obj = element as? JsonObject ?: continue
+            val rawHost = (obj["host"] as? JsonPrimitive)?.contentOrNull.orEmpty()
+            val cleanHost = normalizeExternalHost(rawHost)
+            if (cleanHost.isEmpty()) continue
+            result.add(
+                ExternalBrowserRule(
+                    host = cleanHost,
+                    includeSubdomains = (obj["includeSubdomains"] as? JsonPrimitive)?.booleanOrNull ?: true,
+                    enabled = (obj["enabled"] as? JsonPrimitive)?.booleanOrNull ?: true,
+                    alwaysExternal = (obj["alwaysExternal"] as? JsonPrimitive)?.booleanOrNull ?: false
+                )
+            )
+        }
+        return result.distinctBy { it.host.lowercase(Locale.ROOT) }
+    }
+
+    private fun externalBrowserRulesToJsonArray(rules: List<ExternalBrowserRule>): JsonArray {
+        return buildJsonArray {
+            rules.forEach { rule ->
+                val cleanHost = normalizeExternalHost(rule.host)
+                if (cleanHost.isNotEmpty()) {
+                    add(
+                        buildJsonObject {
+                            put("host", cleanHost)
+                            put("includeSubdomains", rule.includeSubdomains)
+                            put("enabled", rule.enabled)
+                            put("alwaysExternal", rule.alwaysExternal)
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    private fun encodeExternalBrowserRules(rules: List<ExternalBrowserRule>): String {
+        return externalBrowserRulesToJsonArray(rules).toString()
+    }
+
+    private fun stringListToJsonArray(items: List<String>): JsonArray {
+        return buildJsonArray {
+            items.forEach { add(JsonPrimitive(it)) }
+        }
+    }
+
     private fun decodeOrderedList(raw: String?): List<String> {
         if (raw.isNullOrBlank()) return emptyList()
         return runCatching {
-            val arr = JSONArray(raw)
-            List(arr.length()) { idx -> arr.optString(idx) }.filter { it.isNotEmpty() }
+            val arr = Json.parseToJsonElement(raw) as? JsonArray ?: return emptyList()
+            arr.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.takeIf(String::isNotEmpty) }
         }.getOrDefault(emptyList())
     }
 
     private fun encodeOrderedList(items: List<String>): String {
-        return JSONArray(items).toString()
+        return stringListToJsonArray(items).toString()
     }
 
     companion object {
+        private val prettyBackupJson = Json { prettyPrint = true }
         const val DEFAULT_CLIENT_ID = ""
         const val DEFAULT_FALLBACK_CLIENT_ID = ""
         const val DEFAULT_REDIRECT_URI = "fwr://reddit-oauth"
@@ -824,6 +983,7 @@ class UserPreferencesRepository(
         private val KEY_CLICKED_POST_IDS = stringSetPreferencesKey("clicked_post_ids")
         private val KEY_SEARCH_HISTORY = stringPreferencesKey("search_history_json")
         private val KEY_SAVED_DRAFTS = stringPreferencesKey("saved_drafts_json")
+        private val KEY_EXTERNAL_BROWSER_RULES = stringPreferencesKey("external_browser_rules_json")
         private val KEY_LAST_NOTIFIED_MESSAGE_ID = stringPreferencesKey("last_notified_message_id")
 
         private val KEY_CONFIRM_QUIT = booleanPreferencesKey("confirm_quit")
@@ -856,6 +1016,49 @@ class UserPreferencesRepository(
         private val KEY_PREFETCH_NSFW = booleanPreferencesKey("prefetch_nsfw")
         private val KEY_SHOW_INLINE_IMAGES = booleanPreferencesKey("show_inline_images")
         private val KEY_SHOW_COMMENT_NAV_BAR = booleanPreferencesKey("show_comment_nav_bar")
+
+        val DEFAULT_EXTERNAL_BROWSER_RULES: List<ExternalBrowserRule> = listOf(
+            ExternalBrowserRule(
+                host = "youtube.com",
+                includeSubdomains = true,
+                enabled = true,
+                alwaysExternal = true
+            ),
+            ExternalBrowserRule(
+                host = "youtu.be",
+                includeSubdomains = true,
+                enabled = true,
+                alwaysExternal = true
+            ),
+            ExternalBrowserRule(
+                host = "vimeo.com",
+                includeSubdomains = true,
+                enabled = true,
+                alwaysExternal = false
+            ),
+            ExternalBrowserRule(
+                host = "play.google.com",
+                includeSubdomains = false,
+                enabled = true,
+                alwaysExternal = false
+            )
+        )
+
+        fun normalizeExternalHost(rawHost: String): String {
+            var cleaned = rawHost.trim().lowercase(Locale.ROOT)
+            if (cleaned.isEmpty()) return ""
+            cleaned = cleaned
+                .removePrefix("https://")
+                .removePrefix("http://")
+                .removePrefix("//")
+                .substringBefore('/')
+                .substringBefore('?')
+                .substringBefore('#')
+                .substringAfter('@')
+                .substringBefore(':')
+                .trim('.', ' ', '\t')
+            return cleaned
+        }
 
         @Volatile
         private var instance: UserPreferencesRepository? = null

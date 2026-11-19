@@ -849,6 +849,7 @@ private fun RifInAppWebViewBrowser(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    val prefsRepo = remember(context) { UserPreferencesRepository.getInstance(context) }
     var currentUrl by remember(initialUrl) { mutableStateOf(initialUrl) }
     var pageTitle by remember(initialUrl) { mutableStateOf(initialTitle.ifBlank { "Loading…" }) }
     var loadProgress by remember(initialUrl) { mutableIntStateOf(0) }
@@ -1058,6 +1059,15 @@ private fun RifInAppWebViewBrowser(
                             request: WebResourceRequest?
                         ): Boolean {
                             val targetUrl = request?.url?.toString().orEmpty()
+                            val matchingRule = MediaResolver.findMatchingExternalBrowserRule(
+                                rawUrl = targetUrl,
+                                rules = prefsRepo.externalBrowserRules.value
+                            )
+                            if (matchingRule != null) {
+                                onDismiss()
+                                MediaResolver.openInExternalApp(context, targetUrl)
+                                return true
+                            }
                             val redditTarget = MediaResolver.parseRedditLink(targetUrl)
                             if (redditTarget != null) {
                                 onDismiss()

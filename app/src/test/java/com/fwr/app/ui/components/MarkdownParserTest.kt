@@ -305,4 +305,168 @@ class MarkdownParserTest {
             .map { it.item }
         assertEquals(listOf("https://ok.com"), nestedThenValidUrls)
     }
+
+    @Test
+    fun automoderatorFormattingWithSpacedUrlHrAndItalicRelativeLinkParsesCorrectly() {
+        val raw = """
+            Welcome to r/science! Our [normal comment rules]( https://www.reddit.com/r/science/wiki/rules#wiki_comment_rules) apply.
+
+            ---
+
+            User: u/mvea
+
+            *I am a bot, and this action was performed automatically. Please [contact the moderators of this subreddit](/message/compose/?to=/r/science) if you have any questions or concerns.*
+        """.trimIndent()
+
+        val blocks = splitMarkdownBlocks(raw)
+        assertEquals(4, blocks.size)
+        assertEquals(MarkdownBlockKind.PARAGRAPH, blocks[0].kind)
+        assertEquals(MarkdownBlockKind.HORIZONTAL_RULE, blocks[1].kind)
+        assertEquals(MarkdownBlockKind.PARAGRAPH, blocks[2].kind)
+        assertEquals(MarkdownBlockKind.PARAGRAPH, blocks[3].kind)
+
+        val parsed0 = buildRedditMarkdownAnnotatedString(
+            raw = blocks[0].lines.joinToString("\n"),
+            baseColor = Color.White,
+            revealedSpoilers = emptyMap(),
+            spoilerIdStart = 0,
+            linkIdStart = 0
+        )
+        assertEquals(
+            "Welcome to r/science! Our normal comment rules apply.",
+            parsed0.annotatedString.text
+        )
+        assertEquals(2, parsed0.links.size)
+        assertEquals("r/science", parsed0.links[0].label)
+        assertEquals("science", parsed0.links[0].subreddit)
+        assertEquals("normal comment rules", parsed0.links[1].label)
+        assertEquals(
+            "https://www.reddit.com/r/science/wiki/rules#wiki_comment_rules",
+            parsed0.links[1].url
+        )
+
+        val linkIdxAnns0 = parsed0.annotatedString
+            .getStringAnnotations("LINK_INDEX", 0, parsed0.annotatedString.length)
+            .map { it.item }
+        assertEquals(listOf("0", "1"), linkIdxAnns0)
+
+        // Both bare r/science and markdown link should be underlined
+        assertTrue(parsed0.annotatedString.spanStyles.count { it.item.textDecoration == TextDecoration.Underline } >= 2)
+
+        val parsed3 = buildRedditMarkdownAnnotatedString(
+            raw = blocks[3].lines.joinToString("\n"),
+            baseColor = Color.White,
+            revealedSpoilers = emptyMap(),
+            spoilerIdStart = 0,
+            linkIdStart = 2
+        )
+        assertEquals(
+            "I am a bot, and this action was performed automatically. Please contact the moderators of this subreddit if you have any questions or concerns.",
+            parsed3.annotatedString.text
+        )
+        assertTrue(parsed3.annotatedString.spanStyles.any { it.item.fontStyle == FontStyle.Italic })
+        assertEquals(1, parsed3.links.size)
+        assertEquals("contact the moderators of this subreddit", parsed3.links[0].label)
+        assertEquals(
+            "https://www.reddit.com/message/compose/?to=/r/science",
+            parsed3.links[0].url
+        )
+        val linkIdxAnns3 = parsed3.annotatedString
+            .getStringAnnotations("LINK_INDEX", 0, parsed3.annotatedString.length)
+            .map { it.item }
+        assertEquals(listOf("2"), linkIdxAnns3)
+    }
+
+    @Test
+    fun headingsListsTablesCodeBlocksSuperscriptsUnderscoresAndParensParseCorrectly() {
+        val doc = """
+            ### Section Title ##
+            * *Italic bullet* item
+            1. Ordered item
+            >> Nested quote
+            ```kotlin
+            val x = **not_bold**
+            ```
+            | Col A | Col B |
+            | :--- | ---: |
+            | **Bold** | [Wiki](https://en.wikipedia.org/wiki/Kotlin_(programming_language)) |
+
+                indented_code()
+        """.trimIndent()
+
+        val blocks = splitMarkdownBlocks(doc)
+        assertEquals(MarkdownBlockKind.HEADING, blocks[0].kind)
+        assertEquals(3, blocks[0].headingLevel)
+        assertEquals(listOf("Section Title"), blocks[0].lines)
+
+        assertEquals(MarkdownBlockKind.LIST_ITEM, blocks[1].kind)
+        assertEquals("•", blocks[1].listMarker)
+        assertEquals(listOf("*Italic bullet* item"), blocks[1].lines)
+
+        assertEquals(MarkdownBlockKind.LIST_ITEM, blocks[2].kind)
+        assertEquals("1.", blocks[2].listMarker)
+
+        assertEquals(MarkdownBlockKind.QUOTE, blocks[3].kind)
+        assertEquals(2, blocks[3].quoteDepth)
+
+        assertEquals(MarkdownBlockKind.CODE_BLOCK, blocks[4].kind)
+        assertEquals(listOf("val x = **not_bold**"), blocks[4].lines)
+
+        assertEquals(MarkdownBlockKind.TABLE, blocks[5].kind)
+        assertEquals(listOf("Col A", "Col B"), blocks[5].tableHeaders)
+        assertEquals(listOf(MarkdownTableAlign.LEFT, MarkdownTableAlign.RIGHT), blocks[5].tableAlignments)
+        assertEquals(1, blocks[5].tableRows.size)
+
+        assertEquals(MarkdownBlockKind.CODE_BLOCK, blocks[6].kind)
+        assertEquals(listOf("indented_code()"), blocks[6].lines)
+
+        val inline = buildRedditMarkdownAnnotatedString(
+            raw = "snake_case_var _em_ __strong__ ***both*** ^sup ^(two words) \\*escaped\\* " +
+                "https://example.com/a\\_b.html, [Wiki](https://en.wikipedia.org/wiki/Kotlin_(programming_language))",
+            baseColor = Color.White,
+            revealedSpoilers = emptyMap(),
+            spoilerIdStart = 0
+        )
+        val outText = inline.annotatedString.text
+        assertTrue(outText.contains("snake_case_var"))
+        assertTrue(outText.contains("*escaped*"))
+        assertTrue(inline.annotatedString.spanStyles.any { it.item.fontStyle == FontStyle.Italic })
+        assertTrue(inline.annotatedString.spanStyles.any { it.item.fontWeight == FontWeight.Bold })
+        assertTrue(inline.annotatedString.spanStyles.any { it.item.baselineShift != null })
+        val urls = inline.annotatedString.getStringAnnotations("URL", 0, outText.length).map { it.item }
+        assertTrue("https://example.com/a_b.html" in urls)
+        assertTrue("https://en.wikipedia.org/wiki/Kotlin_(programming_language)" in urls)
+
+        val userLinkParsed = buildRedditMarkdownAnnotatedString(
+            raw = "[Spez](/user/spez)",
+            baseColor = Color.White,
+            revealedSpoilers = emptyMap(),
+            spoilerIdStart = 0
+        )
+        assertEquals(1, userLinkParsed.links.size)
+        assertEquals("spez", userLinkParsed.links[0].username)
+        assertEquals("https://www.reddit.com/user/spez", userLinkParsed.links[0].url)
+        val userAnns = userLinkParsed.annotatedString
+            .getStringAnnotations("USER", 0, userLinkParsed.annotatedString.length)
+            .map { it.item }
+        assertEquals(listOf("spez"), userAnns)
+    }
+
+    @Test
+    fun newInlineConstructsScaleLinearlyOn8000UnclosedInputs() {
+        val inputs = listOf(
+            "_abc ".repeat(8000),
+            "__abc ".repeat(8000),
+            "^(abc ".repeat(8000),
+            "[a](https://example.com/(x".repeat(8000)
+        )
+        buildRedditMarkdownAnnotatedString("_abc ".repeat(100), Color.White, emptyMap(), 0)
+        val startNs = System.nanoTime()
+        for (input in inputs) {
+            val parsed = buildRedditMarkdownAnnotatedString(input, Color.White, emptyMap(), 0)
+            assertTrue(parsed.annotatedString.text.isNotEmpty())
+        }
+        val elapsedMs = (System.nanoTime() - startNs) / 1_000_000L
+        assertTrue("Expected linear runtime (< 500ms), got ${elapsedMs}ms", elapsedMs < 500L)
+    }
 }

@@ -127,6 +127,12 @@ import kotlin.math.roundToInt
 
 private const val MAX_VISUAL_INDENT_DEPTH = 10
 
+private data class PendingCommentScroll(
+    val nonce: Int,
+    val listIndex: Int,
+    val targetTopOffsetPx: Int
+)
+
 private val COMMENT_SORT_OPTIONS = listOf(
     "Best" to "confidence",
     "Top" to "top",
@@ -225,10 +231,15 @@ fun CommentsScreen(
     var showScopeReauthDialog by remember { mutableStateOf(false) }
 
     var moreActionsComment by remember { mutableStateOf<RedditComment?>(null) }
+    var pendingDeleteComment by remember(post.id) { mutableStateOf<RedditComment?>(null) }
+    var pendingDeletePost by remember(post.id) { mutableStateOf(false) }
+    var isDeleting by remember(post.id) { mutableStateOf(false) }
     var showOpActionsDialog by remember(post.id) { mutableStateOf(false) }
     var selectCopyTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showScaleDialog by remember { mutableStateOf(false) }
     var isOpSaved by remember(postDetail.id, postDetail.saved) { mutableStateOf(postDetail.saved) }
+    var scrollNonce by remember(post.id) { mutableIntStateOf(0) }
+    var pendingCommentScroll by remember(post.id) { mutableStateOf<PendingCommentScroll?>(null) }
 
     fun apiSortForLabel(label: String): String =
         COMMENT_SORT_OPTIONS.firstOrNull { it.first == label }?.second ?: "confidence"
@@ -335,6 +346,25 @@ fun CommentsScreen(
         }
     }
 
+    LaunchedEffect(authPrefs.userAccessToken, authPrefs.username) {
+        val token = authPrefs.userAccessToken
+        if (!token.isNullOrBlank() && authPrefs.username.isNullOrBlank()) {
+            RedditNetworkClient.getOAuthManager(context).fetchAndStoreMeIdentity(token)
+        }
+    }
+
+    LaunchedEffect(pendingCommentScroll) {
+        val req = pendingCommentScroll ?: return@LaunchedEffect
+        val totalItems = listState.layoutInfo.totalItemsCount
+        if (totalItems > 0) {
+            val safeIndex = req.listIndex.coerceIn(0, totalItems - 1)
+            listState.scrollToItem(
+                index = safeIndex,
+                scrollOffset = -req.targetTopOffsetPx
+            )
+        }
+    }
+
     val visibleNodes = remember(rootComments, collapseVersion) {
         flattenVisibleComments(
             comments = rootComments,
@@ -384,12 +414,27 @@ fun CommentsScreen(
         }
     }
 
-    fun jumpToNodeIndex(nodeIndex: Int) {
+    fun jumpToNodeIndex(nodeIndex: Int, anchorNodeIndex: Int? = null) {
         val node = visibleNodes.getOrNull(nodeIndex) ?: return
-        selectedCommentId = node.comment.id
-        coroutineScope.launch {
-            listState.animateScrollToItem(commentStartIndex + nodeIndex)
+        val desiredTopOffsetPx = if (anchorNodeIndex != null) {
+            val anchorItem = listState.layoutInfo.visibleItemsInfo
+                .firstOrNull { it.index == commentStartIndex + anchorNodeIndex }
+            val viewportHeight = (listState.layoutInfo.viewportEndOffset - listState.layoutInfo.viewportStartOffset)
+                .coerceAtLeast(0)
+            computePreservedScrollOffset(
+                anchorTopOffsetPx = anchorItem?.offset,
+                viewportHeightPx = viewportHeight
+            )
+        } else {
+            0
         }
+        selectedCommentId = node.comment.id
+        scrollNonce++
+        pendingCommentScroll = PendingCommentScroll(
+            nonce = scrollNonce,
+            listIndex = commentStartIndex + nodeIndex,
+            targetTopOffsetPx = desiredTopOffsetPx
+        )
     }
 
     fun stepPrevComment() {
@@ -405,7 +450,7 @@ fun CommentsScreen(
             visibleNodes.take(approx).indexOfLast { it.depth == 0 && !it.isMorePlaceholder }.takeIf { it >= 0 }
                 ?: visibleNodes.indexOfFirst { it.depth == 0 && !it.isMorePlaceholder }.takeIf { it >= 0 }
         }
-        target?.let { jumpToNodeIndex(it) }
+        target?.let { jumpToNodeIndex(it, anchorNodeIndex = selectedIdx.takeIf { idx -> idx >= 0 }) }
     }
 
     fun stepNextComment() {
@@ -423,7 +468,7 @@ fun CommentsScreen(
                 visibleNodes[it].depth == 0 && !visibleNodes[it].isMorePlaceholder
             }
         }
-        target?.let { jumpToNodeIndex(it) }
+        target?.let { jumpToNodeIndex(it, anchorNodeIndex = selectedIdx.takeIf { idx -> idx >= 0 }) }
     }
 
     fun loadMoreStub(node: FlattenedCommentNode) {
@@ -546,11 +591,28 @@ fun CommentsScreen(
                             throw IllegalStateException(apiErr)
                         }
                         responseBody
-                    }.onSuccess {
+                    }.onSuccess { responseBody ->
                         isSendingReply = false
                         replyTargetFullname = null
                         Toast.makeText(context, "Comment submitted!", Toast.LENGTH_SHORT).show()
-                        fetchComments()
+                        val posted = parsePostedCommentFromResponse(
+                            responseBody = responseBody,
+                            fallbackAuthor = activeUsername,
+                            fallbackBody = bodyText
+                        )
+                        if (posted != null) {
+                            rootComments = insertPostedCommentInTree(rootComments, target, posted)
+                            if (target.startsWith("t1_")) {
+                                val parentId = target.removePrefix("t1_")
+                                if (collapsedCommentIds.remove(parentId) != null) {
+                                    collapseVersion++
+                                }
+                            }
+                            postDetail = postDetail.copy(num_comments = postDetail.num_comments + 1)
+                            selectedCommentId = posted.id
+                        } else {
+                            fetchComments()
+                        }
                     }.onFailure { err ->
                         isSendingReply = false
                         if (err.message?.contains("403") == true) {
@@ -575,7 +637,7 @@ fun CommentsScreen(
             title = { Text("Reddit Permission Update Needed") },
             text = {
                 Text(
-                    text = "Your current Reddit login was authorized before comment & post submission permissions (submit, privatemessages, subscribe) were enabled. Tap Re-authorize to grant permission in your browser — your typed reply will stay open.",
+                    text = "Your current Reddit login was authorized before comment & post permissions (submit, edit, privatemessages, subscribe) were enabled. Tap Re-authorize to grant permission in your browser — your typed reply will stay open.",
                     color = RwfPalette.TitleUnreadDark,
                     fontSize = 13.sp,
                     lineHeight = 19.sp
@@ -605,6 +667,9 @@ fun CommentsScreen(
     if (moreActionsComment != null) {
         val targetComment = moreActionsComment!!
         val isSaved = savedOverrides[targetComment.id] ?: targetComment.saved
+        val isOwnComment = !authPrefs.userAccessToken.isNullOrBlank() &&
+            !authPrefs.username.isNullOrBlank() &&
+            targetComment.author.equals(authPrefs.username, ignoreCase = true)
         Dialog(onDismissRequest = { moreActionsComment = null }) {
             Surface(
                 color = RwfPalette.CardBackgroundDark,
@@ -706,13 +771,96 @@ fun CommentsScreen(
                             }
                         }
                     )
+                    if (isOwnComment) {
+                        CommentDialogRow(
+                            text = "Delete comment",
+                            onClick = {
+                                moreActionsComment = null
+                                pendingDeleteComment = targetComment
+                            }
+                        )
+                    }
                 }
             }
         }
     }
 
+    if (pendingDeleteComment != null) {
+        val commentToDelete = pendingDeleteComment!!
+        AlertDialog(
+            onDismissRequest = { if (!isDeleting) pendingDeleteComment = null },
+            containerColor = RwfPalette.CardBackgroundDark,
+            titleContentColor = RwfPalette.TitleUnreadDark,
+            title = { Text("Delete comment?") },
+            text = {
+                Text(
+                    text = "Delete this comment permanently? This cannot be undone.",
+                    color = RwfPalette.TitleUnreadDark,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isDeleting,
+                    onClick = {
+                        isDeleting = true
+                        coroutineScope.launch {
+                            runSuspendCatching {
+                                RedditNetworkClient.apiService.deleteThing(commentToDelete.resolvedFullname)
+                            }.onSuccess {
+                                isDeleting = false
+                                pendingDeleteComment = null
+                                val (updatedTree, removed) = deleteCommentInTree(
+                                    tree = rootComments,
+                                    commentId = commentToDelete.id
+                                )
+                                rootComments = updatedTree
+                                if (removed) {
+                                    postDetail = postDetail.copy(
+                                        num_comments = (postDetail.num_comments - 1).coerceAtLeast(0)
+                                    )
+                                }
+                                if (selectedCommentId == commentToDelete.id) {
+                                    selectedCommentId = null
+                                }
+                                Toast.makeText(context, "Comment deleted", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                isDeleting = false
+                                if (err.message?.contains("403") == true) {
+                                    showScopeReauthDialog = true
+                                }
+                                Toast.makeText(
+                                    context,
+                                    "Failed to delete comment: ${err.localizedMessage ?: "Error"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text(
+                        text = if (isDeleting) "Deleting…" else "Delete",
+                        color = RwfPalette.VoteArrowUpvoteRed,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isDeleting,
+                    onClick = { pendingDeleteComment = null }
+                ) {
+                    Text("Cancel", color = RwfPalette.DomainTextDark)
+                }
+            }
+        )
+    }
+
     // RIF OP Post Actions Dialog (shown when tapping the OP post header at the top of CommentsScreen)
     if (showOpActionsDialog) {
+        val isOwnPost = !authPrefs.userAccessToken.isNullOrBlank() &&
+            !authPrefs.username.isNullOrBlank() &&
+            postDetail.author.equals(authPrefs.username, ignoreCase = true)
         val permalinkUrl = if (postDetail.permalink.startsWith("http")) {
             postDetail.permalink
         } else {
@@ -841,9 +989,76 @@ fun CommentsScreen(
                             }
                         }
                     )
+                    if (isOwnPost) {
+                        CommentDialogRow(
+                            text = "Delete post",
+                            onClick = {
+                                showOpActionsDialog = false
+                                pendingDeletePost = true
+                            }
+                        )
+                    }
                 }
             }
         }
+    }
+
+    if (pendingDeletePost) {
+        AlertDialog(
+            onDismissRequest = { if (!isDeleting) pendingDeletePost = false },
+            containerColor = RwfPalette.CardBackgroundDark,
+            titleContentColor = RwfPalette.TitleUnreadDark,
+            title = { Text("Delete post?") },
+            text = {
+                Text(
+                    text = "Delete this post permanently? This cannot be undone.",
+                    color = RwfPalette.TitleUnreadDark,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isDeleting,
+                    onClick = {
+                        isDeleting = true
+                        coroutineScope.launch {
+                            runSuspendCatching {
+                                RedditNetworkClient.apiService.deleteThing(postDetail.resolvedFullname)
+                            }.onSuccess {
+                                isDeleting = false
+                                pendingDeletePost = false
+                                Toast.makeText(context, "Post deleted", Toast.LENGTH_SHORT).show()
+                                onBackClick()
+                            }.onFailure { err ->
+                                isDeleting = false
+                                if (err.message?.contains("403") == true) {
+                                    showScopeReauthDialog = true
+                                }
+                                Toast.makeText(
+                                    context,
+                                    "Failed to delete post: ${err.localizedMessage ?: "Error"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text(
+                        text = if (isDeleting) "Deleting…" else "Delete",
+                        color = RwfPalette.VoteArrowUpvoteRed,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isDeleting,
+                    onClick = { pendingDeletePost = false }
+                ) {
+                    Text("Cancel", color = RwfPalette.DomainTextDark)
+                }
+            }
+        )
     }
 
     val backgroundColor = RwfPalette.BackgroundMaterialDark
@@ -1553,20 +1768,24 @@ fun CommentsScreen(
                                     selectedCommentId = null
                                 },
                                 onPrev = {
-                                    findPrevCommentIndex(visibleNodes, idx)?.let { jumpToNodeIndex(it) }
+                                    findPrevCommentIndex(visibleNodes, idx)?.let {
+                                        jumpToNodeIndex(it, anchorNodeIndex = idx)
+                                    }
                                 },
                                 onNext = {
-                                    findNextCommentIndex(visibleNodes, idx)?.let { jumpToNodeIndex(it) }
+                                    findNextCommentIndex(visibleNodes, idx)?.let {
+                                        jumpToNodeIndex(it, anchorNodeIndex = idx)
+                                    }
                                 },
                                 onRoot = {
                                     val rootIdx = visibleNodes.indexOfFirst { it.comment.id == node.rootCommentId }
-                                    if (rootIdx >= 0) jumpToNodeIndex(rootIdx)
+                                    if (rootIdx >= 0) jumpToNodeIndex(rootIdx, anchorNodeIndex = idx)
                                 },
                                 onParent = {
                                     val parentId = node.parentCommentId
                                     if (parentId != null) {
                                         val parentIdx = visibleNodes.indexOfFirst { it.comment.id == parentId }
-                                        if (parentIdx >= 0) jumpToNodeIndex(parentIdx)
+                                        if (parentIdx >= 0) jumpToNodeIndex(parentIdx, anchorNodeIndex = idx)
                                     }
                                 },
                                 onUpvote = {
@@ -1707,7 +1926,7 @@ private fun RifCommentRow(
                     modifier = Modifier.padding(vertical = 6.dp)
                 ) {
                 // Top comment nav bar when selected (#comment_nav)
-                AnimatedVisibility(visible = isSelected) {
+                if (isSelected) {
                     FlowRow(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1880,7 +2099,7 @@ private fun RifCommentRow(
                 )
 
                 // Bottom 5-button RIF comment action strip when selected (#comment_actions)
-                AnimatedVisibility(visible = isSelected) {
+                if (isSelected) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()

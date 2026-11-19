@@ -286,4 +286,93 @@ class CommentTreeUtilsTest {
         assertEquals(listOf("t1", "more"), children.map { it.kind })
         assertEquals(listOf("c_tail"), children[1].data.moreChildrenIds)
     }
+
+    @Test
+    fun parsePostedCommentFromResponse_handlesValidFallbackAndMalformedPayloads() {
+        val validJson = """
+            {
+              "json": {
+                "errors": [],
+                "data": {
+                  "things": [
+                    {
+                      "kind": "t1",
+                      "data": {
+                        "id": "new123",
+                        "name": "t1_new123",
+                        "author": "test_user",
+                        "body": "Hello world",
+                        "score": 1,
+                        "likes": true
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()
+        val parsed = parsePostedCommentFromResponse(validJson, fallbackAuthor = "fallback", fallbackBody = "fb")
+        assertEquals("new123", parsed?.id)
+        assertEquals("t1_new123", parsed?.resolvedFullname)
+        assertEquals("test_user", parsed?.author)
+        assertEquals("Hello world", parsed?.body)
+
+        val minimalJson = """{"json":{"errors":[],"data":{"things":[{"kind":"t1","data":{"name":"t1_min9"}}]}} }"""
+        val fallbackParsed = parsePostedCommentFromResponse(minimalJson, fallbackAuthor = "me", fallbackBody = "my text")
+        assertEquals("min9", fallbackParsed?.id)
+        assertEquals("me", fallbackParsed?.author)
+        assertEquals("my text", fallbackParsed?.body)
+
+        assertNull(parsePostedCommentFromResponse("""{"json":{"errors":[["RATELIMIT","wait"]],"data":{"things":[]}}}"""))
+        assertNull(parsePostedCommentFromResponse("not-json"))
+    }
+
+    @Test
+    fun insertAndDeleteCommentInTree_handlesTopLevelNestedDeepTreeAndWithChildren() {
+        val leafReply = t1("c1a", body = "leaf reply")
+        val c1 = t1("c1", replies = listOf(RedditThing(kind = "t1", data = leafReply)))
+        val c2 = t1("c2")
+
+        // Insert top-level comment & nested reply + duplicate guard
+        val afterTop = insertPostedCommentInTree(listOf(c1, c2), "t3_post1", t1("top_new"))
+        assertEquals(listOf("top_new", "c1", "c2"), afterTop.map { it.id })
+        assertEquals(afterTop, insertPostedCommentInTree(afterTop, "t3_post1", t1("top_new")))
+
+        val afterNested = insertPostedCommentInTree(afterTop, "t1_c2", t1("c2_reply"))
+        val c2Children = afterNested[2].replies?.data?.children.orEmpty()
+        assertEquals(listOf("c2_reply"), c2Children.map { it.data.id })
+
+        // Deleting leaf comment removes it completely
+        val (afterLeafDelete, leafRemoved) = deleteCommentInTree(afterNested, "c2_reply")
+        assertTrue(leafRemoved)
+        assertTrue(afterLeafDelete[2].replies?.data?.children.orEmpty().isEmpty())
+
+        // Deleting parent with replies keeps children and marks [deleted]
+        val (afterParentDelete, parentRemoved) = deleteCommentInTree(afterLeafDelete, "c1")
+        assertFalse(parentRemoved)
+        val deletedParent = afterParentDelete[1]
+        assertEquals("[deleted]", deletedParent.author)
+        assertEquals("[deleted]", deletedParent.body)
+        assertEquals(listOf("c1a"), deletedParent.replies?.data?.children?.map { it.data.id })
+
+        // Deep 600-level tree insert & delete does not overflow stack
+        var deep = t1("d599")
+        for (i in 598 downTo 0) {
+            deep = t1("d$i", replies = listOf(RedditThing(kind = "t1", data = deep)))
+        }
+        val afterDeepInsert = insertPostedCommentInTree(listOf(deep), "t1_d599", t1("d600"))
+        assertTrue("d600" in collectCommentIds(afterDeepInsert))
+        val (afterDeepDelete, deepRemoved) = deleteCommentInTree(afterDeepInsert, "d600")
+        assertTrue(deepRemoved)
+        assertFalse("d600" in collectCommentIds(afterDeepDelete))
+    }
+
+    @Test
+    fun computePreservedScrollOffset_clampsAnchorWithinViewport() {
+        assertEquals(0, computePreservedScrollOffset(null, viewportHeightPx = 1000))
+        assertEquals(0, computePreservedScrollOffset(-40, viewportHeightPx = 1000))
+        assertEquals(420, computePreservedScrollOffset(420, viewportHeightPx = 1000))
+        assertEquals(880, computePreservedScrollOffset(950, viewportHeightPx = 1000, minVisibleBottomPx = 120))
+        assertEquals(0, computePreservedScrollOffset(200, viewportHeightPx = 80, minVisibleBottomPx = 120))
+    }
 }

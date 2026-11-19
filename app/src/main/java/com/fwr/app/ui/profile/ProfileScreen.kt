@@ -81,6 +81,7 @@ import com.fwr.app.data.network.RedditNetworkClient
 import com.fwr.app.data.prefs.UserPreferencesRepository
 import com.fwr.app.ui.components.PostCard
 import com.fwr.app.ui.components.RifAwardBadges
+import com.fwr.app.ui.components.RifMarkdownText
 import com.fwr.app.ui.theme.RwfPalette
 import com.fwr.app.util.MediaResolver
 import com.fwr.app.util.runSuspendCatching
@@ -627,6 +628,9 @@ fun ProfileScreen(
                             RifProfileCommentCard(
                                 comment = item,
                                 amoledBlackBackground = appSettings.amoledBlackBackground,
+                                showInlineImages = appSettings.showInlineImages,
+                                onSelectSubreddit = onSelectSubreddit,
+                                onOpenAuthorProfile = onOpenAuthorProfile,
                                 onClick = {
                                     val articleId = item.link_id?.removePrefix("t3_").orEmpty()
                                     if (articleId.isNotBlank()) {
@@ -726,6 +730,9 @@ private fun RifTrophyCard(trophy: TrophyItem) {
 private fun RifProfileCommentCard(
     comment: RedditComment,
     amoledBlackBackground: Boolean,
+    showInlineImages: Boolean,
+    onSelectSubreddit: (String) -> Unit,
+    onOpenAuthorProfile: (String) -> Unit,
     onClick: () -> Unit
 ) {
     val bgColor = if (amoledBlackBackground) Color.Black else RwfPalette.BackgroundMaterialDark
@@ -808,12 +815,17 @@ private fun RifProfileCommentCard(
             }
         }
 
-        // Line 3: Comment body in white
-        Text(
+        // Line 3: Comment body rendered as Reddit Markdown
+        RifMarkdownText(
             text = comment.body.trim(),
             color = RwfPalette.TitleUnreadDark,
             fontSize = 14.sp,
-            lineHeight = 19.sp
+            lineHeight = 19.sp,
+            mediaMetadata = comment.media_metadata,
+            showInlineImages = showInlineImages,
+            onSubredditClick = onSelectSubreddit,
+            onUserClick = onOpenAuthorProfile,
+            onNonLinkClick = onClick
         )
     }
 

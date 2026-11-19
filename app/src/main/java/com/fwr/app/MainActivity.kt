@@ -477,6 +477,16 @@ class MainActivity : ComponentActivity() {
      * - Self post -> opens [CommentsScreen].
      */
     private fun handleMediaRouting(post: RedditPost) {
+        val rawPostUrl = MediaResolver.unwrapRedditMediaUrl(
+            (post.url_overridden_by_dest ?: post.url).trim().replace("&amp;", "&")
+        )
+        val rules = preferencesRepository.externalBrowserRules.value
+        val preferExternal = preferencesRepository.appSettings.value.preferExternalBrowser
+        val matchingRule = MediaResolver.findMatchingExternalBrowserRule(rawPostUrl, rules)
+        if (matchingRule != null && matchingRule.alwaysExternal) {
+            MediaResolver.openInExternalApp(this, rawPostUrl)
+            return
+        }
         when (val resolved = MediaResolver.resolve(post)) {
             is ResolvedMedia.DirectImage,
             is ResolvedMedia.Gallery,
@@ -489,6 +499,8 @@ class MainActivity : ComponentActivity() {
                 val redditTarget = MediaResolver.parseRedditLink(resolved.url)
                 if (redditTarget != null) {
                     MediaResolver.emitRedditLinkTarget(redditTarget)
+                } else if (matchingRule != null || preferExternal) {
+                    MediaResolver.openInExternalApp(this, resolved.url)
                 } else {
                     activeMediaPost = post
                 }

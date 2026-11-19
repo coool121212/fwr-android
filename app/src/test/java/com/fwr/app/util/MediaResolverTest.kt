@@ -10,6 +10,7 @@ import com.fwr.app.data.model.RedditPreview
 import com.fwr.app.data.model.RedditPreviewImage
 import com.fwr.app.data.model.RedditPreviewSource
 import com.fwr.app.data.model.RedditVideoInfo
+import com.fwr.app.data.prefs.ExternalBrowserRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -324,5 +325,30 @@ class MediaResolverTest {
             RedditLinkTarget.Post(subreddit = "", articleId = "post1", commentId = "comm2"),
             emptySlugRootComments
         )
+    }
+
+    @Test
+    fun findMatchingExternalBrowserRule_matchesSubdomainsIgnoresLookalikesAndHonorsFlags() {
+        val rules = listOf(
+            ExternalBrowserRule(host = "youtube.com", includeSubdomains = true, enabled = true, alwaysExternal = true),
+            ExternalBrowserRule(host = "vimeo.com", includeSubdomains = false, enabled = true, alwaysExternal = false),
+            ExternalBrowserRule(host = "disabled.org", includeSubdomains = true, enabled = false, alwaysExternal = true)
+        )
+
+        assertEquals(
+            "youtube.com",
+            MediaResolver.findMatchingExternalBrowserRule("https://m.youtube.com/watch?v=123", rules)?.host
+        )
+        assertEquals(
+            "youtube.com",
+            MediaResolver.findMatchingExternalBrowserRule("https://www.youtube.com/shorts/abc", rules)?.host
+        )
+        assertNull(MediaResolver.findMatchingExternalBrowserRule("https://notyoutube.com/watch?v=123", rules))
+        assertEquals(
+            "vimeo.com",
+            MediaResolver.findMatchingExternalBrowserRule("https://vimeo.com/123", rules)?.host
+        )
+        assertNull(MediaResolver.findMatchingExternalBrowserRule("https://player.vimeo.com/123", rules))
+        assertNull(MediaResolver.findMatchingExternalBrowserRule("https://sub.disabled.org/page", rules))
     }
 }

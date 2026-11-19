@@ -50,6 +50,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -119,7 +121,13 @@ fun SubredditDrawer(
     subreddits: List<String> = DEFAULT_SUBSCRIBED_SUBREDDITS
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val coroutineScope = rememberCoroutineScope()
+    val hideKeyboard = {
+        focusManager.clearFocus(force = true)
+        keyboardController?.hide()
+    }
     val prefsRepo = remember(context) { UserPreferencesRepository.getInstance(context) }
     val authPrefs by prefsRepo.authPreferences.collectAsStateWithLifecycle()
     val savedSubs by prefsRepo.subscribedSubreddits.collectAsStateWithLifecycle(initialValue = emptySet())
@@ -163,6 +171,7 @@ fun SubredditDrawer(
             onDismiss = { sidebarTargetSub = null },
             onSelectSubreddit = { chosen ->
                 sidebarTargetSub = null
+                hideKeyboard()
                 onSelectSubreddit(chosen)
             }
         )
@@ -198,6 +207,7 @@ fun SubredditDrawer(
         val target = query.trim().removePrefix("/r/").removePrefix("r/")
         if (target.isNotEmpty()) {
             query = ""
+            hideKeyboard()
             onSelectSubreddit(target)
         }
     }
@@ -295,7 +305,10 @@ fun SubredditDrawer(
                     subtitle = "Subscribed frontpage",
                     isSelected = currentSubreddit.equals("frontpage", ignoreCase = true) ||
                         currentSubreddit.equals("front page", ignoreCase = true),
-                    onClick = { onSelectSubreddit("frontpage") }
+                    onClick = {
+                        hideKeyboard()
+                        onSelectSubreddit("frontpage")
+                    }
                 )
                 HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
 
@@ -303,7 +316,10 @@ fun SubredditDrawer(
                     label = "/r/all",
                     subtitle = "All subreddits",
                     isSelected = currentSubreddit.equals("all", ignoreCase = true),
-                    onClick = { onSelectSubreddit("all") }
+                    onClick = {
+                        hideKeyboard()
+                        onSelectSubreddit("all")
+                    }
                 )
                 HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
 
@@ -311,7 +327,10 @@ fun SubredditDrawer(
                     label = "/r/popular",
                     subtitle = "Popular posts",
                     isSelected = currentSubreddit.equals("popular", ignoreCase = true),
-                    onClick = { onSelectSubreddit("popular") }
+                    onClick = {
+                        hideKeyboard()
+                        onSelectSubreddit("popular")
+                    }
                 )
             }
 
@@ -339,6 +358,7 @@ fun SubredditDrawer(
                         isSubscribed = isSubscribed,
                         onSelect = {
                             query = ""
+                            hideKeyboard()
                             onSelectSubreddit(sub)
                         },
                         onToggleFavorite = {
@@ -384,7 +404,10 @@ fun SubredditDrawer(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(DrawerHeaderSurfaceDark)
-                    .clickable(onClick = onOpenSettings)
+                    .clickable {
+                        hideKeyboard()
+                        onOpenSettings()
+                    }
                     .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {

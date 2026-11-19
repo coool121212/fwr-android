@@ -92,6 +92,7 @@ import com.fwr.app.data.update.AppUpdateManager
 import com.fwr.app.data.update.UpdateCheckResult
 import com.fwr.app.data.network.RedditNetworkClient
 import com.fwr.app.data.notifications.UnreadMailScheduler
+import com.fwr.app.data.prefs.ExternalBrowserRule
 import com.fwr.app.data.prefs.UserPreferencesRepository
 import com.fwr.app.ui.theme.RwfPalette
 import com.fwr.app.util.runSuspendCatching
@@ -107,6 +108,7 @@ private enum class RifSettingsSubScreen(val title: String) {
     GENERAL("General settings"),
     SCALE("Scale & text size"),
     BROWSER("Browser"),
+    EXTERNAL_BROWSER_URLS("External browser URLs"),
     DATA_USAGE("Data usage"),
     CONTENT_FILTERS("Content filters"),
     HISTORY("History"),
@@ -163,6 +165,7 @@ fun SettingsScreen(
     val clickedPostIds by preferencesRepository.clickedPostIds.collectAsStateWithLifecycle()
     val searchHistory by preferencesRepository.searchHistory.collectAsStateWithLifecycle()
     val savedDrafts by preferencesRepository.savedDrafts.collectAsStateWithLifecycle()
+    val externalBrowserRules by preferencesRepository.externalBrowserRules.collectAsStateWithLifecycle()
     val autoUpdateCheck by AppUpdateManager.autoCheckEnabled.collectAsStateWithLifecycle()
     var checkingForUpdates by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { AppUpdateManager.init(context) }
@@ -293,9 +296,13 @@ fun SettingsScreen(
         }
     }
 
-    // BackHandler returns from a sub-screen to the root Settings menu first
+    // BackHandler returns from a sub-screen to its parent Settings menu first
     BackHandler(enabled = currentSubScreen != null) {
-        currentSubScreen = null
+        currentSubScreen = if (currentSubScreen == RifSettingsSubScreen.EXTERNAL_BROWSER_URLS) {
+            RifSettingsSubScreen.BROWSER
+        } else {
+            null
+        }
     }
 
     val isConnected = !accessToken.isNullOrBlank()
@@ -612,10 +619,11 @@ fun SettingsScreen(
                 navigationIcon = {
                     IconButton(
                         onClick = {
-                            if (currentSubScreen != null) {
-                                currentSubScreen = null
-                            } else {
-                                onBackClick()
+                            when (currentSubScreen) {
+                                null -> onBackClick()
+                                RifSettingsSubScreen.EXTERNAL_BROWSER_URLS ->
+                                    currentSubScreen = RifSettingsSubScreen.BROWSER
+                                else -> currentSubScreen = null
                             }
                         }
                     ) {
@@ -662,29 +670,43 @@ fun SettingsScreen(
                 // ROOT PREFERENCES MENU
                 // =========================================================================
                 null -> {
-                    val visibleCategories = RifSettingsSubScreen.entries.filter {
-                        if (searchFilter.isBlank()) {
-                            true
-                        } else {
-                            it.title.contains(searchFilter, ignoreCase = true) ||
-                                ((it == RifSettingsSubScreen.SCALE || it == RifSettingsSubScreen.APPEARANCE) &&
-                                    listOf(
-                                        "scale",
-                                        "font",
-                                        "text",
-                                        "size",
-                                        "thumbnail",
-                                        "navigation",
-                                        "nav",
-                                        "prev",
-                                        "next",
-                                        "buttons"
-                                    ).any { kw ->
-                                        searchFilter.contains(kw, ignoreCase = true) ||
-                                            kw.contains(searchFilter, ignoreCase = true)
-                                    })
+                    val visibleCategories = RifSettingsSubScreen.entries
+                        .filter { it != RifSettingsSubScreen.EXTERNAL_BROWSER_URLS }
+                        .filter {
+                            if (searchFilter.isBlank()) {
+                                true
+                            } else {
+                                it.title.contains(searchFilter, ignoreCase = true) ||
+                                    ((it == RifSettingsSubScreen.SCALE || it == RifSettingsSubScreen.APPEARANCE) &&
+                                        listOf(
+                                            "scale",
+                                            "font",
+                                            "text",
+                                            "size",
+                                            "thumbnail",
+                                            "navigation",
+                                            "nav",
+                                            "prev",
+                                            "next",
+                                            "buttons"
+                                        ).any { kw ->
+                                            searchFilter.contains(kw, ignoreCase = true) ||
+                                                kw.contains(searchFilter, ignoreCase = true)
+                                        }) ||
+                                    (it == RifSettingsSubScreen.BROWSER &&
+                                        listOf(
+                                            "browser",
+                                            "youtube",
+                                            "domain",
+                                            "external",
+                                            "url",
+                                            "link"
+                                        ).any { kw ->
+                                            searchFilter.contains(kw, ignoreCase = true) ||
+                                                kw.contains(searchFilter, ignoreCase = true)
+                                        })
+                            }
                         }
-                    }
                     visibleCategories.forEach { category ->
                         RifRootPreferenceItem(
                             title = category.title,
@@ -945,7 +967,7 @@ fun SettingsScreen(
                 RifSettingsSubScreen.BROWSER -> {
                     RifCheckBoxPreferenceRow(
                         title = "Prefer external browser",
-                        summary = "Launch external browser app instead of Chrome Custom Tabs for web links",
+                        summary = "Open web links in your external browser/app instead of the in-app browser",
                         checked = appSettings.preferExternalBrowser,
                         onCheckedChange = { checked ->
                             coroutineScope.launch {
@@ -953,6 +975,18 @@ fun SettingsScreen(
                                     it.copy(preferExternalBrowser = checked)
                                 }
                             }
+                        }
+                    )
+                    val enabledHosts = externalBrowserRules.filter { it.enabled }.map { it.host }
+                    RifListPreferenceRow(
+                        title = "External browser URLs",
+                        currentValue = if (enabledHosts.isEmpty()) {
+                            "No domains configured — tap to add"
+                        } else {
+                            enabledHosts.joinToString(", ")
+                        },
+                        onClick = {
+                            currentSubScreen = RifSettingsSubScreen.EXTERNAL_BROWSER_URLS
                         }
                     )
                     RifCheckBoxPreferenceRow(
@@ -991,6 +1025,240 @@ fun SettingsScreen(
                             }
                         }
                     )
+                }
+
+                // =========================================================================
+                // 3b. EXTERNAL BROWSER URLS
+                // =========================================================================
+                RifSettingsSubScreen.EXTERNAL_BROWSER_URLS -> {
+                    var editingRule by remember { mutableStateOf<ExternalBrowserRule?>(null) }
+                    var showAddOrEditRuleDialog by remember { mutableStateOf(false) }
+
+                    if (showAddOrEditRuleDialog) {
+                        var hostInput by remember(editingRule) {
+                            mutableStateOf(editingRule?.host.orEmpty())
+                        }
+                        var includeSubdomains by remember(editingRule) {
+                            mutableStateOf(editingRule?.includeSubdomains ?: true)
+                        }
+                        var alwaysExternal by remember(editingRule) {
+                            mutableStateOf(editingRule?.alwaysExternal ?: false)
+                        }
+
+                        AlertDialog(
+                            onDismissRequest = { showAddOrEditRuleDialog = false },
+                            containerColor = RwfPalette.CardBackgroundDark,
+                            titleContentColor = RwfPalette.TitleUnreadDark,
+                            title = {
+                                Text(if (editingRule == null) "Add domain rule" else "Edit domain rule")
+                            },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    OutlinedTextField(
+                                        value = hostInput,
+                                        onValueChange = { hostInput = it },
+                                        label = { Text("Domain / host") },
+                                        placeholder = { Text("e.g. youtube.com") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { includeSubdomains = !includeSubdomains }
+                                    ) {
+                                        Checkbox(
+                                            checked = includeSubdomains,
+                                            onCheckedChange = { includeSubdomains = it }
+                                        )
+                                        Text(
+                                            text = "Include subdomains",
+                                            color = RwfPalette.TitleUnreadDark,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { alwaysExternal = !alwaysExternal }
+                                    ) {
+                                        Checkbox(
+                                            checked = alwaysExternal,
+                                            onCheckedChange = { alwaysExternal = it }
+                                        )
+                                        Text(
+                                            text = "Always open externally (skip in-app media viewer)",
+                                            color = RwfPalette.TitleUnreadDark,
+                                            fontSize = 14.sp
+                                        )
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        val cleanHost = UserPreferencesRepository.normalizeExternalHost(hostInput)
+                                        if (cleanHost.isEmpty()) {
+                                            Toast.makeText(
+                                                context,
+                                                "Enter a valid domain such as youtube.com",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                            return@TextButton
+                                        }
+                                        val previousHost = editingRule?.host
+                                        showAddOrEditRuleDialog = false
+                                        coroutineScope.launch {
+                                            if (previousHost != null && !previousHost.equals(cleanHost, ignoreCase = true)) {
+                                                preferencesRepository.removeExternalBrowserRule(previousHost)
+                                            }
+                                            preferencesRepository.upsertExternalBrowserRule(
+                                                ExternalBrowserRule(
+                                                    host = cleanHost,
+                                                    includeSubdomains = includeSubdomains,
+                                                    enabled = editingRule?.enabled ?: true,
+                                                    alwaysExternal = alwaysExternal
+                                                )
+                                            )
+                                        }
+                                    }
+                                ) {
+                                    Text("Save", color = RwfPalette.AccentDarkTheme, fontWeight = FontWeight.SemiBold)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showAddOrEditRuleDialog = false }) {
+                                    Text("Cancel", color = RwfPalette.DomainTextDark)
+                                }
+                            }
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Domains enabled here open directly in their external Android app (such as YouTube) or external browser instead of inside FWR.",
+                            color = RwfPalette.DomainTextDark,
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    editingRule = null
+                                    showAddOrEditRuleDialog = true
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Add domain")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        preferencesRepository.resetExternalBrowserRulesToDefaults()
+                                        Toast.makeText(
+                                            context,
+                                            "Restored default external domain rules",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Reset defaults")
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
+
+                    if (externalBrowserRules.isEmpty()) {
+                        Text(
+                            text = "No external domain rules configured. Tap 'Add domain' above to open links like youtube.com externally.",
+                            color = RwfPalette.DomainTextDark,
+                            fontSize = 14.sp,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    } else {
+                        externalBrowserRules.forEach { rule ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        editingRule = rule
+                                        showAddOrEditRuleDialog = true
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = rule.enabled,
+                                        onCheckedChange = { checked ->
+                                            coroutineScope.launch {
+                                                preferencesRepository.toggleExternalBrowserRule(
+                                                    host = rule.host,
+                                                    enabled = checked
+                                                )
+                                            }
+                                        },
+                                        colors = CheckboxDefaults.colors(
+                                            checkedColor = RwfPalette.AccentDarkTheme,
+                                            checkmarkColor = if (RwfPalette.AccentDarkTheme.luminance() > 0.5f) {
+                                                Color.Black
+                                            } else {
+                                                Color.White
+                                            },
+                                            uncheckedColor = RwfPalette.DomainTextDark
+                                        )
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = rule.host,
+                                            color = RwfPalette.TitleUnreadDark,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                        Text(
+                                            text = buildString {
+                                                append(if (rule.includeSubdomains) "includes subdomains" else "exact host only")
+                                                if (rule.alwaysExternal) append(" • always external")
+                                            },
+                                            color = RwfPalette.DomainTextDark,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                preferencesRepository.removeExternalBrowserRule(rule.host)
+                                            }
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Delete ${rule.host}",
+                                            tint = RwfPalette.DomainTextDark
+                                        )
+                                    }
+                                }
+                                HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
+                            }
+                        }
+                    }
                 }
 
                 // =========================================================================

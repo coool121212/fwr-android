@@ -310,4 +310,14 @@ interface RedditApiService {
         @Field("reason") reason: String = "other",
         @Field("api_type") apiType: String = "json"
     ): ResponseBody
+
+    /**
+     * Permanently deletes a comment (`t1_...`) or post (`t3_...`) authored by the current user.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @FormUrlEncoded
+    @POST("api/del")
+    suspend fun deleteThing(
+        @Field("id") fullname: String
+    ): Unit
 }

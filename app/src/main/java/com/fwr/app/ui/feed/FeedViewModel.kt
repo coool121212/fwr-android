@@ -23,7 +23,10 @@ data class FeedCacheKey(
     val subreddit: String,
     val sort: String,
     val timeFilter: String,
-    val searchQuery: String?
+    val searchQuery: String?,
+    val searchRestrictToSubreddit: Boolean = true,
+    val searchIncludeNsfw: Boolean = false,
+    val searchSort: String = "relevance"
 )
 
 data class CachedFeedEntry(
@@ -100,11 +103,15 @@ class FeedViewModel @JvmOverloads constructor(
     }
 
     private fun currentCacheKey(): FeedCacheKey {
+        val activeQuery = _searchQuery.value?.trim()?.takeIf { it.isNotEmpty() }
         return FeedCacheKey(
             subreddit = _subreddit.value.trim().lowercase(),
             sort = _sort.value.trim().lowercase(),
             timeFilter = _timeFilter.value.trim().lowercase(),
-            searchQuery = _searchQuery.value?.trim()?.takeIf { it.isNotEmpty() }
+            searchQuery = activeQuery,
+            searchRestrictToSubreddit = if (activeQuery != null) _searchRestrictToSubreddit.value else true,
+            searchIncludeNsfw = if (activeQuery != null) _searchIncludeNsfw.value else false,
+            searchSort = if (activeQuery != null) _searchSort.value.trim().lowercase() else "relevance"
         )
     }
 
@@ -170,6 +177,9 @@ class FeedViewModel @JvmOverloads constructor(
         _sort.value = previousKey.sort
         _timeFilter.value = previousKey.timeFilter
         _searchQuery.value = previousKey.searchQuery
+        _searchRestrictToSubreddit.value = previousKey.searchRestrictToSubreddit
+        _searchIncludeNsfw.value = previousKey.searchIncludeNsfw
+        _searchSort.value = previousKey.searchSort
 
         val cached = feedCache[previousKey]
         if (cached != null && isCacheEntryFresh(cached)) {
@@ -211,36 +221,61 @@ class FeedViewModel @JvmOverloads constructor(
         val tFilter = _timeFilter.value.takeIf { sortOrder == "top" || sortOrder == "controversial" }
 
         if (!activeSearch.isNullOrBlank()) {
-            val nsfwParam = if (_searchIncludeNsfw.value) "on" else "off"
-            val response: Response<RedditListing<RedditPost>> = if (_searchRestrictToSubreddit.value &&
+            val includeNsfw = _searchIncludeNsfw.value
+            val nsfwParam = if (includeNsfw) "on" else "false"
+            val restrictToSub = _searchRestrictToSubreddit.value &&
                 !sub.equals("frontpage", ignoreCase = true) &&
                 !sub.equals("all", ignoreCase = true) &&
                 !sub.equals("popular", ignoreCase = true)
-            ) {
-                apiService.searchSubredditPosts(
-                    sub = sub,
-                    query = activeSearch,
-                    restrictSr = "on",
-                    sort = _searchSort.value,
-                    timeFilter = _timeFilter.value,
-                    includeOver18 = nsfwParam,
-                    after = after
-                )
-            } else {
-                apiService.searchAllPosts(
-                    query = activeSearch,
-                    sort = _searchSort.value,
-                    timeFilter = _timeFilter.value,
-                    includeOver18 = nsfwParam,
-                    after = after
-                )
+
+            suspend fun fetchSearchPage(cursor: String?): Response<RedditListing<RedditPost>> {
+                return if (restrictToSub) {
+                    apiService.searchSubredditPosts(
+                        sub = sub,
+                        query = activeSearch,
+                        restrictSr = "on",
+                        sort = _searchSort.value,
+                        timeFilter = _timeFilter.value,
+                        includeOver18 = nsfwParam,
+                        after = cursor
+                    )
+                } else {
+                    apiService.searchAllPosts(
+                        query = activeSearch,
+                        sort = _searchSort.value,
+                        timeFilter = _timeFilter.value,
+                        includeOver18 = nsfwParam,
+                        after = cursor
+                    )
+                }
             }
-            val listing = response.requireBodyOrThrow()
+
+            var cursor = after
+            val collected = mutableListOf<RedditPost>()
+            var lastAfter: String? = null
+            var lastUrl = ""
+            var lastCode = 200
+            var pageAttempts = 0
+            while (pageAttempts < 3) {
+                pageAttempts++
+                val response = fetchSearchPage(cursor)
+                val listing = response.requireBodyOrThrow()
+                lastUrl = response.raw().request.url.toString()
+                lastCode = response.code()
+                lastAfter = listing.data.after?.takeIf { it.isNotBlank() }
+                val rawPosts = listing.data.children.map { it.data }
+                val filteredPosts = if (includeNsfw) rawPosts else rawPosts.filterNot { it.over_18 }
+                collected.addAll(filteredPosts)
+                if (includeNsfw || collected.isNotEmpty() || lastAfter == null) {
+                    break
+                }
+                cursor = lastAfter
+            }
             return FeedFetchResult(
-                posts = listing.data.children.map { it.data },
-                after = listing.data.after,
-                requestedUrl = response.raw().request.url.toString(),
-                responseCode = response.code()
+                posts = collected.distinctBy { it.id.ifEmpty { it.permalink } },
+                after = lastAfter,
+                requestedUrl = lastUrl,
+                responseCode = lastCode
             )
         }
 

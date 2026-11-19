@@ -185,4 +185,51 @@ class UserPreferencesRepositoryTest {
         assertNull(repo.awaitAuthSnapshot().userAccessToken)
         assertNull(repo.awaitAuthSnapshot().refreshToken)
     }
+
+    @Test
+    fun externalBrowserRulesCrudBackupAndEmptyListPersistence() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { tempFolder.newFile("prefs_ext_rules.preferences_pb") }
+        )
+        val repo = UserPreferencesRepository(dataStore, backgroundScope, testCipher)
+
+        val initialDefaults = repo.externalBrowserRules.first()
+        assertTrue(initialDefaults.any { it.host == "youtube.com" && it.alwaysExternal })
+        assertTrue(initialDefaults.any { it.host == "youtu.be" && it.alwaysExternal })
+
+        repo.upsertExternalBrowserRule(
+            ExternalBrowserRule(
+                host = "HTTPS://Twitter.com/path",
+                includeSubdomains = true,
+                enabled = true,
+                alwaysExternal = false
+            )
+        )
+        val afterUpsert = repo.externalBrowserRules.first { list -> list.any { it.host == "twitter.com" } }
+        assertTrue(afterUpsert.any { it.host == "twitter.com" })
+
+        repo.toggleExternalBrowserRule("twitter.com", enabled = false)
+        val afterToggle = repo.externalBrowserRules.first { list ->
+            list.firstOrNull { it.host == "twitter.com" }?.enabled == false
+        }
+        assertFalse(afterToggle.first { it.host == "twitter.com" }.enabled)
+
+        val backupJson = repo.exportBackupJson()
+
+        // Removing all rules must persist emptyList rather than reverting to defaults
+        for (rule in afterToggle) {
+            repo.removeExternalBrowserRule(rule.host)
+        }
+        val afterRemoveAll = repo.externalBrowserRules.first { it.isEmpty() }
+        assertTrue(afterRemoveAll.isEmpty())
+
+        assertTrue(repo.importBackupJson(backupJson))
+        val afterImport = repo.externalBrowserRules.first { list -> list.any { it.host == "twitter.com" } }
+        assertFalse(afterImport.first { it.host == "twitter.com" }.enabled)
+
+        repo.resetExternalBrowserRulesToDefaults()
+        val afterReset = repo.externalBrowserRules.first { list -> list.none { it.host == "twitter.com" } }
+        assertEquals(UserPreferencesRepository.DEFAULT_EXTERNAL_BROWSER_RULES, afterReset)
+    }
 }

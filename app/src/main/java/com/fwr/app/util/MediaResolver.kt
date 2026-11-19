@@ -11,6 +11,7 @@ import android.widget.Toast
 import androidx.browser.customtabs.CustomTabsIntent
 import com.fwr.app.data.model.RedditPost
 import com.fwr.app.data.network.RedditNetworkClient
+import com.fwr.app.data.prefs.ExternalBrowserRule
 import com.fwr.app.data.prefs.RifAppSettings
 import com.fwr.app.data.prefs.UserPreferencesRepository
 import kotlinx.coroutines.Dispatchers
@@ -784,26 +785,90 @@ object MediaResolver {
     }
 
     /**
-     * Routes a clicked URL using native in-app navigation for Reddit links,
-     * or FWR's in-app media viewer / built-in browser by default.
+     * Returns the best matching enabled [ExternalBrowserRule] for [rawUrl], or `null` if none match.
+     * Prefers `alwaysExternal` rules, then longest host match.
+     */
+    fun findMatchingExternalBrowserRule(
+        rawUrl: String,
+        rules: List<ExternalBrowserRule>
+    ): ExternalBrowserRule? {
+        if (rules.isEmpty() || rawUrl.isBlank()) return null
+        val parsed = parseUrl(rawUrl) ?: return null
+        val urlHost = parsed.host.trim().lowercase(Locale.ROOT).trimEnd('.')
+        if (urlHost.isEmpty()) return null
+
+        var bestMatch: ExternalBrowserRule? = null
+        for (rule in rules) {
+            if (!rule.enabled) continue
+            val ruleHost = UserPreferencesRepository.normalizeExternalHost(rule.host)
+            if (ruleHost.isEmpty()) continue
+            val matches = if (rule.includeSubdomains) {
+                urlHost == ruleHost || urlHost.endsWith(".$ruleHost")
+            } else {
+                urlHost == ruleHost
+            }
+            if (!matches) continue
+            val currentBest = bestMatch
+            if (currentBest == null) {
+                bestMatch = rule
+            } else {
+                val bestHostLen = UserPreferencesRepository.normalizeExternalHost(currentBest.host).length
+                val betterAlways = rule.alwaysExternal && !currentBest.alwaysExternal
+                val sameAlwaysLongerHost = (rule.alwaysExternal == currentBest.alwaysExternal) &&
+                    ruleHost.length > bestHostLen
+                if (betterAlways || sameAlwaysLongerHost) {
+                    bestMatch = rule
+                }
+            }
+        }
+        return bestMatch
+    }
+
+    /**
+     * Routes a clicked URL using configured external domain rules, native in-app navigation
+     * for Reddit links, or FWR's in-app media viewer / built-in browser by default.
      */
     fun openExternalLink(context: Context, url: String) {
         val sanitized = url.trim().replace("&amp;", "&")
         if (sanitized.isEmpty()) return
+        val prefsRepo = runCatching { UserPreferencesRepository.getInstance(context) }.getOrNull()
+        val rules = prefsRepo?.externalBrowserRules?.value.orEmpty()
+        val preferExternal = prefsRepo?.appSettings?.value?.preferExternalBrowser ?: false
+        val matchingRule = findMatchingExternalBrowserRule(sanitized, rules)
+        if (matchingRule != null && matchingRule.alwaysExternal) {
+            openInExternalApp(context, sanitized)
+            return
+        }
         parseRedditLink(sanitized)?.let { redditTarget ->
             _activeRedditLinkTarget.value = redditTarget
             return
         }
         val resolved = resolveUrl(sanitized)
         if (resolved is ResolvedMedia.SelfPost) return
-        val preferExternal = runCatching {
-            UserPreferencesRepository.getInstance(context).appSettings.value.preferExternalBrowser
-        }.getOrDefault(false)
-        if (resolved is ResolvedMedia.ExternalWeb && preferExternal) {
-            openSystemBrowser(context, sanitized)
+        if (resolved is ResolvedMedia.ExternalWeb && (matchingRule != null || preferExternal)) {
+            openInExternalApp(context, sanitized)
             return
         }
         _activeInAppMedia.value = resolved
+    }
+
+    /**
+     * Launches a URL via `Intent.ACTION_VIEW` so native Android app links (e.g., YouTube)
+     * or the default external browser handle it instead of Chrome Custom Tabs or in-app WebView.
+     */
+    fun openInExternalApp(context: Context, url: String) {
+        val sanitized = url.trim().replace("&amp;", "&")
+        if (sanitized.isEmpty()) return
+        val effectiveUrl = parseUrl(sanitized)?.normalizedUrl ?: sanitized
+        val uri = runCatching { Uri.parse(effectiveUrl) }.getOrNull() ?: return
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, uri).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        }.onFailure {
+            openSystemBrowser(context, effectiveUrl)
+        }
     }
 
     fun isCurrentlyOnWifi(context: Context): Boolean {

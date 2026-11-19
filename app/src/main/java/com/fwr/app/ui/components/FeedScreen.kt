@@ -70,6 +70,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -127,6 +129,8 @@ fun FeedScreen(
     onOpenInboxClick: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
     val coroutineScope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
 
@@ -134,7 +138,17 @@ fun FeedScreen(
     val subreddit by viewModel.subreddit.collectAsStateWithLifecycle()
     val sort by viewModel.sort.collectAsStateWithLifecycle()
     val activeSearchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val searchRestrictToSub by viewModel.searchRestrictToSubreddit.collectAsStateWithLifecycle()
+    val searchIncludeNsfw by viewModel.searchIncludeNsfw.collectAsStateWithLifecycle()
+    val searchSort by viewModel.searchSort.collectAsStateWithLifecycle()
     val activeTimeFilter by viewModel.timeFilter.collectAsStateWithLifecycle()
+
+    LaunchedEffect(drawerState.targetValue) {
+        if (drawerState.targetValue == DrawerValue.Closed) {
+            focusManager.clearFocus(force = true)
+            keyboardController?.hide()
+        }
+    }
 
     val listState = rememberLazyListState()
     var overflowMenuExpanded by remember { mutableStateOf(false) }
@@ -366,9 +380,15 @@ fun FeedScreen(
         val isAggregateSub = subreddit.equals("frontpage", ignoreCase = true) ||
             subreddit.equals("all", ignoreCase = true) ||
             subreddit.equals("popular", ignoreCase = true)
-        var restrictToSub by remember { mutableStateOf(!isAggregateSub) }
-        var includeNsfw by remember { mutableStateOf(appSettings.nsfwAllowed) }
-        var selectedSearchSort by remember { mutableStateOf("relevance") }
+        var restrictToSub by remember {
+            mutableStateOf(if (activeSearchQuery != null) searchRestrictToSub else !isAggregateSub)
+        }
+        var includeNsfw by remember {
+            mutableStateOf(if (activeSearchQuery != null) searchIncludeNsfw else appSettings.nsfwAllowed)
+        }
+        var selectedSearchSort by remember {
+            mutableStateOf(if (activeSearchQuery != null) searchSort else "relevance")
+        }
 
         AlertDialog(
             onDismissRequest = { showSearchDialog = false },
@@ -856,6 +876,8 @@ fun FeedScreen(
             SubredditDrawer(
                 currentSubreddit = subreddit,
                 onSelectSubreddit = { chosenSubreddit ->
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
                     coroutineScope.launch {
                         drawerState.close()
                     }
@@ -863,6 +885,8 @@ fun FeedScreen(
                     viewModel.selectSubreddit(chosenSubreddit)
                 },
                 onOpenSettings = {
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
                     coroutineScope.launch {
                         drawerState.close()
                     }
@@ -1332,13 +1356,20 @@ fun FeedScreen(
                                     state.posts,
                                     hiddenPostIds,
                                     appSettings.nsfwAllowed,
+                                    activeSearchQuery,
+                                    searchIncludeNsfw,
                                     blockedSubreddits,
                                     keywordFilters
                                 ) {
+                                    val effectiveNsfwAllowed = if (!activeSearchQuery.isNullOrBlank()) {
+                                        searchIncludeNsfw
+                                    } else {
+                                        appSettings.nsfwAllowed
+                                    }
                                     FeedFilter.filterPosts(
                                         posts = state.posts,
                                         hiddenPostIds = hiddenPostIds,
-                                        nsfwAllowed = appSettings.nsfwAllowed,
+                                        nsfwAllowed = effectiveNsfwAllowed,
                                         blockedSubreddits = blockedSubreddits,
                                         keywordFilters = keywordFilters
                                     )

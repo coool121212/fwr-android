@@ -47,10 +47,11 @@ class FeedViewModelTest {
         Dispatchers.resetMain()
     }
 
-    private fun makePost(id: String) = RedditPost(
+    private fun makePost(id: String, over18: Boolean = false) = RedditPost(
         id = id,
         title = "Post $id",
-        subreddit = "kotlin"
+        subreddit = "kotlin",
+        over_18 = over18
     )
 
     private fun listingResponse(
@@ -72,6 +73,7 @@ class FeedViewModelTest {
         var handler: suspend (sub: String, sort: String, after: String?) -> Response<RedditListing<RedditPost>>
     ) : RedditApiService {
         var callCount = 0
+        var searchHandler: (suspend (sub: String?, query: String, includeOver18: String, after: String?) -> Response<RedditListing<RedditPost>>)? = null
 
         override suspend fun getSubredditPosts(
             sub: String,
@@ -99,8 +101,14 @@ class FeedViewModelTest {
         override suspend fun getUserTrophies(username: String): TrophyListResponse = throw UnsupportedOperationException()
         override suspend fun getUserProfileSection(username: String, section: String, after: String?, sort: String?): RedditListing<Any> = throw UnsupportedOperationException()
         override suspend fun getUserProfileSectionResponse(username: String, section: String, after: String?, sort: String?): Response<RedditListing<Any>> = throw UnsupportedOperationException()
-        override suspend fun searchSubredditPosts(sub: String, query: String, restrictSr: String, sort: String, timeFilter: String, includeOver18: String, after: String?, rawJson: Int): Response<RedditListing<RedditPost>> = throw UnsupportedOperationException()
-        override suspend fun searchAllPosts(query: String, sort: String, timeFilter: String, includeOver18: String, after: String?, rawJson: Int): Response<RedditListing<RedditPost>> = throw UnsupportedOperationException()
+        override suspend fun searchSubredditPosts(sub: String, query: String, restrictSr: String, sort: String, timeFilter: String, includeOver18: String, after: String?, rawJson: Int): Response<RedditListing<RedditPost>> {
+            callCount++
+            return searchHandler?.invoke(sub, query, includeOver18, after) ?: throw UnsupportedOperationException()
+        }
+        override suspend fun searchAllPosts(query: String, sort: String, timeFilter: String, includeOver18: String, after: String?, rawJson: Int): Response<RedditListing<RedditPost>> {
+            callCount++
+            return searchHandler?.invoke(null, query, includeOver18, after) ?: throw UnsupportedOperationException()
+        }
         override suspend fun getPostComments(articleId: String, sort: String?, limit: Int?, depth: Int?, rawJson: Int): List<RedditListing<Any>> = throw UnsupportedOperationException()
         override suspend fun getPostSubtreeComments(articleId: String, commentId: String, sort: String?, limit: Int, depth: Int, rawJson: Int): List<RedditListing<Any>> = throw UnsupportedOperationException()
         override suspend fun getMoreChildren(linkId: String, childrenCsv: String, apiType: String, rawJson: Int): MoreChildrenResponse = throw UnsupportedOperationException()
@@ -119,6 +127,7 @@ class FeedViewModelTest {
         override suspend fun markMessageUnread(fullnamesCsv: String) = throw UnsupportedOperationException()
         override suspend fun composeMessage(recipient: String, subject: String, body: String, apiType: String): ResponseBody = throw UnsupportedOperationException()
         override suspend fun reportThing(thingId: String, reason: String, apiType: String): ResponseBody = throw UnsupportedOperationException()
+        override suspend fun deleteThing(fullname: String) = throw UnsupportedOperationException()
     }
 
     @Test
@@ -497,5 +506,63 @@ class FeedViewModelTest {
 
         assertEquals("all", vm.subreddit.value)
         assertEquals(1, api.callCount)
+    }
+
+    @Test
+    fun performSearch_filtersNsfwResultsWhenUncheckedAndSkipsAllNsfwFirstPage() = runTest {
+        val recordedOver18Flags = mutableListOf<String>()
+        val api = FakeRedditApiService { _, _, _ ->
+            listingResponse(listOf(makePost("feed_1")), after = null)
+        }.apply {
+            searchHandler = { _, _, includeOver18, after ->
+                recordedOver18Flags += includeOver18
+                when {
+                    includeOver18 == "false" && after == null -> {
+                        listingResponse(listOf(makePost("nsfw_only", over18 = true)), after = "page2")
+                    }
+                    includeOver18 == "false" && after == "page2" -> {
+                        listingResponse(
+                            listOf(
+                                makePost("nsfw_2", over18 = true),
+                                makePost("sfw_1", over18 = false)
+                            ),
+                            after = null
+                        )
+                    }
+                    else -> {
+                        listingResponse(
+                            listOf(
+                                makePost("nsfw_2", over18 = true),
+                                makePost("sfw_1", over18 = false)
+                            ),
+                            after = null
+                        )
+                    }
+                }
+            }
+        }
+        val vm = FeedViewModel(apiService = api, usernameProvider = { null }, autoLoad = false)
+        vm.loadInitialFeed()
+        advanceUntilIdle()
+
+        vm.performSearch(query = "test", restrictToSub = false, includeNsfw = false)
+        advanceUntilIdle()
+
+        assertEquals(listOf("false", "false"), recordedOver18Flags)
+        val sfwResult = vm.uiState.value as FeedUiState.Success
+        assertEquals(listOf("sfw_1"), sfwResult.posts.map { it.id })
+
+        // Enabling includeNsfw issues a fresh query with "on" and keeps NSFW posts
+        vm.performSearch(query = "test", restrictToSub = false, includeNsfw = true)
+        advanceUntilIdle()
+        val nsfwResult = vm.uiState.value as FeedUiState.Success
+        assertEquals(listOf("nsfw_2", "sfw_1"), nsfwResult.posts.map { it.id })
+        assertEquals("on", recordedOver18Flags.last())
+
+        // Navigating back restores previous SFW-only search cache without losing distinct cache key
+        assertTrue(vm.navigateBackInFeed())
+        advanceUntilIdle()
+        val restoredSfw = vm.uiState.value as FeedUiState.Success
+        assertEquals(listOf("sfw_1"), restoredSfw.posts.map { it.id })
     }
 }
