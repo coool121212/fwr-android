@@ -76,6 +76,8 @@ data class RifAppSettings(
     val showCommentGuideLines: Boolean = true,
     val showInlineImages: Boolean = true,
     val showCommentNavBar: Boolean = false,
+    val showAllInDrawer: Boolean = true,
+    val showPopularInDrawer: Boolean = true,
 
     // Notifications
     val inboxBadgeEnabled: Boolean = false,
@@ -346,7 +348,9 @@ class UserPreferencesRepository(
             autoLoadComments = prefs[KEY_AUTO_LOAD_COMMENTS] ?: true,
             prefetchNsfw = prefs[KEY_PREFETCH_NSFW] ?: false,
             showInlineImages = prefs[KEY_SHOW_INLINE_IMAGES] ?: true,
-            showCommentNavBar = prefs[KEY_SHOW_COMMENT_NAV_BAR] ?: false
+            showCommentNavBar = prefs[KEY_SHOW_COMMENT_NAV_BAR] ?: false,
+            showAllInDrawer = prefs[KEY_SHOW_ALL_IN_DRAWER] ?: true,
+            showPopularInDrawer = prefs[KEY_SHOW_POPULAR_IN_DRAWER] ?: true
         )
     }
 
@@ -381,6 +385,8 @@ class UserPreferencesRepository(
         prefs[KEY_PREFETCH_NSFW] = updated.prefetchNsfw
         prefs[KEY_SHOW_INLINE_IMAGES] = updated.showInlineImages
         prefs[KEY_SHOW_COMMENT_NAV_BAR] = updated.showCommentNavBar
+        prefs[KEY_SHOW_ALL_IN_DRAWER] = updated.showAllInDrawer
+        prefs[KEY_SHOW_POPULAR_IN_DRAWER] = updated.showPopularInDrawer
     }
 
     val appSettings: StateFlow<RifAppSettings> = preferencesFlow
@@ -800,6 +806,8 @@ class UserPreferencesRepository(
                     put("prefetchNsfw", settings.prefetchNsfw)
                     put("showInlineImages", settings.showInlineImages)
                     put("showCommentNavBar", settings.showCommentNavBar)
+                    put("showAllInDrawer", settings.showAllInDrawer)
+                    put("showPopularInDrawer", settings.showPopularInDrawer)
                 }
             )
             put("subscribedSubreddits", stringListToJsonArray(prefs[KEY_SUBSCRIBED_SUBREDDITS].orEmpty().sorted()))
@@ -857,7 +865,9 @@ class UserPreferencesRepository(
                         autoLoadComments = optBool("autoLoadComments", current.autoLoadComments),
                         prefetchNsfw = optBool("prefetchNsfw", current.prefetchNsfw),
                         showInlineImages = optBool("showInlineImages", current.showInlineImages),
-                        showCommentNavBar = optBool("showCommentNavBar", current.showCommentNavBar)
+                        showCommentNavBar = optBool("showCommentNavBar", current.showCommentNavBar),
+                        showAllInDrawer = optBool("showAllInDrawer", current.showAllInDrawer),
+                        showPopularInDrawer = optBool("showPopularInDrawer", current.showPopularInDrawer)
                     )
                 }
             }
@@ -1016,6 +1026,8 @@ class UserPreferencesRepository(
         private val KEY_PREFETCH_NSFW = booleanPreferencesKey("prefetch_nsfw")
         private val KEY_SHOW_INLINE_IMAGES = booleanPreferencesKey("show_inline_images")
         private val KEY_SHOW_COMMENT_NAV_BAR = booleanPreferencesKey("show_comment_nav_bar")
+        private val KEY_SHOW_ALL_IN_DRAWER = booleanPreferencesKey("show_all_in_drawer")
+        private val KEY_SHOW_POPULAR_IN_DRAWER = booleanPreferencesKey("show_popular_in_drawer")
 
         val DEFAULT_EXTERNAL_BROWSER_RULES: List<ExternalBrowserRule> = listOf(
             ExternalBrowserRule(

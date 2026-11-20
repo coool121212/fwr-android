@@ -84,6 +84,7 @@ sealed interface RedditLinkTarget {
         val subreddit: String,
         val articleId: String,
         val commentId: String? = null,
+        val context: Int? = null,
         val title: String = ""
     ) : RedditLinkTarget
 
@@ -741,10 +742,16 @@ object MediaResolver {
             val articleId = rawSegments[3]
             if (sub.isNotBlank() && articleId.isNotBlank()) {
                 val commentId = rawSegments.getOrNull(5)?.takeIf { it.isNotBlank() }
+                val contextDepth = if (commentId != null) {
+                    parsed.queryParams["context"]?.toIntOrNull()?.coerceAtLeast(0)
+                } else {
+                    null
+                }
                 return RedditLinkTarget.Post(
                     subreddit = sub,
                     articleId = articleId,
-                    commentId = commentId
+                    commentId = commentId,
+                    context = contextDepth
                 )
             }
         }
@@ -754,10 +761,16 @@ object MediaResolver {
             val articleId = rawSegments[1]
             if (articleId.isNotBlank()) {
                 val commentId = rawSegments.getOrNull(3)?.takeIf { it.isNotBlank() }
+                val contextDepth = if (commentId != null) {
+                    parsed.queryParams["context"]?.toIntOrNull()?.coerceAtLeast(0)
+                } else {
+                    null
+                }
                 return RedditLinkTarget.Post(
                     subreddit = "",
                     articleId = articleId,
-                    commentId = commentId
+                    commentId = commentId,
+                    context = contextDepth
                 )
             }
         }

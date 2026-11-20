@@ -87,7 +87,10 @@ data class RedditPost(
     @SerialName("crosspost_parent_list")
     val crosspost_parent_list: List<RedditPost> = emptyList(),
     @SerialName("is_reddit_media_domain")
-    val is_reddit_media_domain: Boolean = false
+    val is_reddit_media_domain: Boolean = false,
+    @SerialName("edited")
+    @Serializable(with = RedditEditedSerializer::class)
+    val edited: Boolean = false
 ) {
     val resolvedFullname: String get() = fullname.ifBlank { "t3_$id" }
     val numComments: Int get() = num_comments

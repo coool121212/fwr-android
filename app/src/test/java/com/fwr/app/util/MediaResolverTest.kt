@@ -328,6 +328,54 @@ class MediaResolverTest {
     }
 
     @Test
+    fun parseRedditLink_extractsCommentContextDepth() {
+        assertEquals(
+            RedditLinkTarget.Post(
+                subreddit = "AfterVanced",
+                articleId = "1xz1eqj",
+                commentId = "19swfq4qs4o2p",
+                context = 3
+            ),
+            MediaResolver.parseRedditLink(
+                "https://www.reddit.com/r/AfterVanced/comments/1xz1eqj/made_a_reddit_client/19swfq4qs4o2p/?context=3"
+            )
+        )
+        assertEquals(
+            RedditLinkTarget.Post(
+                subreddit = "AfterVanced",
+                articleId = "1xz1eqj",
+                commentId = "19swfq4qs4o2p",
+                context = 0
+            ),
+            MediaResolver.parseRedditLink(
+                "https://www.reddit.com/r/AfterVanced/comments/1xz1eqj/made_a_reddit_client/19swfq4qs4o2p/?context=0"
+            )
+        )
+        assertEquals(
+            RedditLinkTarget.Post(
+                subreddit = "",
+                articleId = "1xz1eqj",
+                commentId = "19swfq4qs4o2p",
+                context = 2
+            ),
+            MediaResolver.parseRedditLink(
+                "https://www.reddit.com/comments/1xz1eqj/slug/19swfq4qs4o2p/?context=2"
+            )
+        )
+        assertEquals(
+            RedditLinkTarget.Post(
+                subreddit = "AfterVanced",
+                articleId = "1xz1eqj",
+                commentId = "19swfq4qs4o2p",
+                context = null
+            ),
+            MediaResolver.parseRedditLink(
+                "https://www.reddit.com/r/AfterVanced/comments/1xz1eqj/made_a_reddit_client/19swfq4qs4o2p/"
+            )
+        )
+    }
+
+    @Test
     fun findMatchingExternalBrowserRule_matchesSubdomainsIgnoresLookalikesAndHonorsFlags() {
         val rules = listOf(
             ExternalBrowserRule(host = "youtube.com", includeSubdomains = true, enabled = true, alwaysExternal = true),

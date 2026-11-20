@@ -5,8 +5,13 @@ import com.fwr.app.data.model.MoreChildrenResponse
 import com.fwr.app.data.model.RedditComment
 import com.fwr.app.data.model.RedditListing
 import com.fwr.app.data.model.RedditListingData
+import com.fwr.app.data.model.RedditPost
 import com.fwr.app.data.model.RedditThing
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 @Immutable
 data class FlattenedCommentNode(
@@ -535,4 +540,98 @@ internal fun computePreservedScrollOffset(
     if (anchorTopOffsetPx == null) return 0
     val maxOffset = (viewportHeightPx - minVisibleBottomPx).coerceAtLeast(0)
     return anchorTopOffsetPx.coerceIn(0, maxOffset)
+}
+
+internal fun updateEditedCommentInTree(
+    tree: List<RedditComment>,
+    commentId: String,
+    newBody: String
+): List<RedditComment> {
+    val (frames, matchedFrameIndex) = findCommentFrame(tree, commentId) ?: return tree
+    val matchedFrame = frames[matchedFrameIndex]
+    val updatedComment = matchedFrame.comment.copy(
+        body = newBody,
+        edited = true
+    )
+    if (matchedFrame.parentFrameIndex == -1) {
+        val updatedRoot = tree.toMutableList()
+        updatedRoot[matchedFrame.childIndexInParent] = updatedComment
+        return updatedRoot
+    }
+    val parentFrame = frames[matchedFrame.parentFrameIndex]
+    val parentComment = parentFrame.comment
+    val parentReplies = parentComment.replies ?: return tree
+    val updatedChildren = parentReplies.data.children.toMutableList()
+    updatedChildren[matchedFrame.childIndexInParent] =
+        updatedChildren[matchedFrame.childIndexInParent].copy(data = updatedComment)
+    val updatedParent = parentComment.copy(
+        replies = parentReplies.copy(
+            data = parentReplies.data.copy(children = updatedChildren)
+        )
+    )
+    return rebuildTreeFromParentFrame(tree, frames, matchedFrame.parentFrameIndex, updatedParent)
+}
+
+internal fun parseEditedTextFromResponse(
+    responseBody: String,
+    isSelfPost: Boolean,
+    fallbackText: String
+): String {
+    if (responseBody.isBlank()) return fallbackText
+    return runCatching {
+        val root = postedCommentJson.parseToJsonElement(responseBody) as? JsonObject ?: return fallbackText
+        val jsonObj = root["json"] as? JsonObject ?: return fallbackText
+        val dataObj = jsonObj["data"] as? JsonObject ?: return fallbackText
+        val things = dataObj["things"] as? JsonArray ?: return fallbackText
+        val firstThing = things.firstOrNull() as? JsonObject ?: return fallbackText
+        val thingData = firstThing["data"] as? JsonObject ?: return fallbackText
+        val fieldName = if (isSelfPost) "selftext" else "body"
+        val extracted = (thingData[fieldName] as? JsonPrimitive)?.contentOrNull
+        extracted?.takeIf { it.isNotBlank() } ?: fallbackText
+    }.getOrDefault(fallbackText)
+}
+
+internal fun normalizeCommentPermalinkBase(
+    post: RedditPost,
+    comment: RedditComment
+): String {
+    val cleanCommentPerma = comment.permalink
+        ?.trim()
+        ?.substringBefore('#')
+        ?.substringBefore('?')
+        ?.takeIf { it.isNotEmpty() }
+    val resolvedUrl = if (cleanCommentPerma != null) {
+        if (cleanCommentPerma.startsWith("http://", ignoreCase = true) ||
+            cleanCommentPerma.startsWith("https://", ignoreCase = true)
+        ) {
+            cleanCommentPerma
+        } else {
+            "https://www.reddit.com/${cleanCommentPerma.trimStart('/')}"
+        }
+    } else {
+        val cleanPostPerma = post.permalink
+            .trim()
+            .substringBefore('#')
+            .substringBefore('?')
+        val basePostUrl = if (cleanPostPerma.startsWith("http://", ignoreCase = true) ||
+            cleanPostPerma.startsWith("https://", ignoreCase = true)
+        ) {
+            cleanPostPerma.trimEnd('/')
+        } else if (cleanPostPerma.isNotEmpty()) {
+            "https://www.reddit.com/${cleanPostPerma.trimStart('/').trimEnd('/')}"
+        } else {
+            "https://www.reddit.com/r/${post.subreddit.ifBlank { "all" }}/comments/${post.id.removePrefix("t3_")}"
+        }
+        if (comment.id.isNotBlank()) "$basePostUrl/${comment.id}" else basePostUrl
+    }
+    return if (resolvedUrl.endsWith('/')) resolvedUrl else "$resolvedUrl/"
+}
+
+internal fun appendContextToPermalink(baseUrl: String, contextInput: String): String {
+    val digits = contextInput.trim()
+    return if (digits.isNotEmpty() && digits.all { it.isDigit() }) {
+        "$baseUrl?context=$digits"
+    } else {
+        baseUrl
+    }
 }

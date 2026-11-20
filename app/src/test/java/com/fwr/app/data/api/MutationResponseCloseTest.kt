@@ -37,7 +37,7 @@ class MutationResponseCloseTest {
     }
 
     @Test
-    fun allNineMutationEndpointsCloseBodiesAndReuseSingleConnection() = runTest {
+    fun allTenMutationEndpointsCloseBodiesAndReuseSingleConnection() = runTest {
         val acquired = AtomicInteger(0)
         val released = AtomicInteger(0)
         val bodyEnded = AtomicInteger(0)
@@ -68,7 +68,7 @@ class MutationResponseCloseTest {
         ).create(RedditApiService::class.java)
 
         val largeBody = """{"json":{"errors":[]},"pad":"${"x".repeat(4096)}"}"""
-        repeat(9) {
+        repeat(10) {
             server.enqueue(MockResponse().setResponseCode(200).setBody(largeBody))
         }
 
@@ -81,11 +81,12 @@ class MutationResponseCloseTest {
         api.markMessageRead("t4_1")
         api.markMessageUnread("t4_1")
         api.deleteThing("t1_abc")
+        api.setSendReplies("t1_abc", true)
 
-        assertEquals(9, server.requestCount)
-        assertEquals(9, acquired.get())
-        assertEquals(9, released.get())
-        assertEquals(9, bodyEnded.get())
+        assertEquals(10, server.requestCount)
+        assertEquals(10, acquired.get())
+        assertEquals(10, released.get())
+        assertEquals(10, bodyEnded.get())
         assertTrue(pool.connectionCount() <= 1)
     }
 
@@ -131,7 +132,7 @@ class MutationResponseCloseTest {
     }
 
     @Test
-    fun reflectionVerifiesNineMutationEndpointsDoNotReturnResponseBody() {
+    fun reflectionVerifiesTenMutationEndpointsDoNotReturnResponseBody() {
         val mutationMethodNames = setOf(
             "setSubredditSubscription",
             "vote",
@@ -141,11 +142,12 @@ class MutationResponseCloseTest {
             "unhide",
             "markMessageRead",
             "markMessageUnread",
-            "deleteThing"
+            "deleteThing",
+            "setSendReplies"
         )
         val methods = RedditApiService::class.java.declaredMethods
             .filter { it.name in mutationMethodNames }
-        assertEquals(9, methods.size)
+        assertEquals(10, methods.size)
 
         for (method in methods) {
             val continuationType = method.genericParameterTypes.last().toString()

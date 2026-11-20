@@ -33,6 +33,9 @@ object RwfPalette {
     val SelectedPostRowDark: Color
         get() = if (!isDark) Color(0xFFD6E8FA) else Color(0xFF232A35)
 
+    val HighlightedDirectCommentBg: Color
+        get() = if (!isDark) Color(0xFFFFFFCC) else if (isAmoled) Color(0xFF2C2136) else Color(0xFF3D2E4B)
+
     val ActionStripTextDark: Color
         get() = if (!isDark) Color(0xFF1A1A1A) else Color(0xFFDDDDDD)
 

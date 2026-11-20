@@ -130,6 +130,7 @@ fun SubredditDrawer(
     }
     val prefsRepo = remember(context) { UserPreferencesRepository.getInstance(context) }
     val authPrefs by prefsRepo.authPreferences.collectAsStateWithLifecycle()
+    val appSettings by prefsRepo.appSettings.collectAsStateWithLifecycle()
     val savedSubs by prefsRepo.subscribedSubreddits.collectAsStateWithLifecycle(initialValue = emptySet())
     val favoriteSubs by prefsRepo.favoriteSubreddits.collectAsStateWithLifecycle(initialValue = emptySet())
     val blockedSubreddits by prefsRepo.blockedSubreddits.collectAsStateWithLifecycle()
@@ -310,28 +311,52 @@ fun SubredditDrawer(
                         onSelectSubreddit("frontpage")
                     }
                 )
-                HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
+                if (appSettings.showAllInDrawer) {
+                    HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
 
-                DrawerQuickFeedRow(
-                    label = "/r/all",
-                    subtitle = "All subreddits",
-                    isSelected = currentSubreddit.equals("all", ignoreCase = true),
-                    onClick = {
-                        hideKeyboard()
-                        onSelectSubreddit("all")
-                    }
-                )
-                HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
+                    DrawerQuickFeedRow(
+                        label = "/r/all",
+                        subtitle = "All subreddits",
+                        isSelected = currentSubreddit.equals("all", ignoreCase = true),
+                        onClick = {
+                            hideKeyboard()
+                            onSelectSubreddit("all")
+                        },
+                        onHide = {
+                            coroutineScope.launch {
+                                prefsRepo.updateAppSettings { it.copy(showAllInDrawer = false) }
+                            }
+                            Toast.makeText(
+                                context,
+                                "Hid /r/all — re-enable in Settings → Appearance",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+                }
+                if (appSettings.showPopularInDrawer) {
+                    HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
 
-                DrawerQuickFeedRow(
-                    label = "/r/popular",
-                    subtitle = "Popular posts",
-                    isSelected = currentSubreddit.equals("popular", ignoreCase = true),
-                    onClick = {
-                        hideKeyboard()
-                        onSelectSubreddit("popular")
-                    }
-                )
+                    DrawerQuickFeedRow(
+                        label = "/r/popular",
+                        subtitle = "Popular posts",
+                        isSelected = currentSubreddit.equals("popular", ignoreCase = true),
+                        onClick = {
+                            hideKeyboard()
+                            onSelectSubreddit("popular")
+                        },
+                        onHide = {
+                            coroutineScope.launch {
+                                prefsRepo.updateAppSettings { it.copy(showPopularInDrawer = false) }
+                            }
+                            Toast.makeText(
+                                context,
+                                "Hid /r/popular — re-enable in Settings → Appearance",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
+                }
             }
 
             HorizontalDivider(thickness = 1.dp, color = RwfPalette.PaneDividerGray50)
@@ -434,27 +459,72 @@ private fun DrawerQuickFeedRow(
     label: String,
     subtitle: String,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onHide: (() -> Unit)? = null
 ) {
     val bgColor = if (isSelected) DrawerSelectedRowDark else Color.Transparent
-    Column(
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(bgColor)
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp)
+            .padding(
+                start = 14.dp,
+                end = if (onHide != null) 4.dp else 14.dp,
+                top = 8.dp,
+                bottom = 8.dp
+            ),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = label,
-            color = if (isSelected) RwfPalette.AccentDarkTheme else RwfPalette.TitleUnreadDark,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-        Text(
-            text = subtitle,
-            color = RwfPalette.DomainTextDark,
-            fontSize = 11.sp
-        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = label,
+                color = if (isSelected) RwfPalette.AccentDarkTheme else RwfPalette.TitleUnreadDark,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                text = subtitle,
+                color = RwfPalette.DomainTextDark,
+                fontSize = 11.sp
+            )
+        }
+        if (onHide != null) {
+            Box {
+                IconButton(
+                    onClick = { menuExpanded = true },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "$label options",
+                        tint = RwfPalette.DomainTextDark,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+                DropdownMenu(
+                    expanded = menuExpanded,
+                    onDismissRequest = { menuExpanded = false },
+                    modifier = Modifier.background(RwfPalette.CardBackgroundDark)
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = "Hide from drawer",
+                                color = RwfPalette.TitleUnreadDark,
+                                fontSize = 14.sp
+                            )
+                        },
+                        onClick = {
+                            menuExpanded = false
+                            onHide()
+                        }
+                    )
+                }
+            }
+        }
     }
 }
 

@@ -154,6 +154,7 @@ interface RedditApiService {
         @Query("sort") sort: String? = null,
         @Query("limit") limit: Int = 500,
         @Query("depth") depth: Int = 10,
+        @Query("context") context: Int? = null,
         @Query("raw_json") rawJson: Int = 1
     ): List<RedditListing<@Contextual Any>>
 
@@ -319,5 +320,29 @@ interface RedditApiService {
     @POST("api/del")
     suspend fun deleteThing(
         @Field("id") fullname: String
+    ): Unit
+
+    /**
+     * Edits the markdown text of a comment (`t1_...`) or self post (`t3_...`) authored by the current user.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @FormUrlEncoded
+    @POST("api/editusertext")
+    suspend fun editUserText(
+        @Field("thing_id") thingId: String,
+        @Field("text") markdownText: String,
+        @Field("api_type") apiType: String = "json",
+        @Field("raw_json") rawJson: Int = 1
+    ): ResponseBody
+
+    /**
+     * Enables or disables inbox reply notifications for an authored comment (`t1_...`) or post (`t3_...`).
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @FormUrlEncoded
+    @POST("api/sendreplies")
+    suspend fun setSendReplies(
+        @Field("id") fullname: String,
+        @Field("state") state: Boolean
     ): Unit
 }

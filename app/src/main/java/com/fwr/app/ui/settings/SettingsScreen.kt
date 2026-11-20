@@ -688,7 +688,11 @@ fun SettingsScreen(
                                             "nav",
                                             "prev",
                                             "next",
-                                            "buttons"
+                                            "buttons",
+                                            "drawer",
+                                            "all",
+                                            "popular",
+                                            "panel"
                                         ).any { kw ->
                                             searchFilter.contains(kw, ignoreCase = true) ||
                                                 kw.contains(searchFilter, ignoreCase = true)
@@ -1488,6 +1492,30 @@ fun SettingsScreen(
                             coroutineScope.launch {
                                 preferencesRepository.updateAppSettings {
                                     it.copy(showCommentNavBar = checked)
+                                }
+                            }
+                        }
+                    )
+                    RifCheckBoxPreferenceRow(
+                        title = "Show /r/all in drawer",
+                        summary = "Display the /r/all shortcut in the left navigation panel",
+                        checked = appSettings.showAllInDrawer,
+                        onCheckedChange = { checked ->
+                            coroutineScope.launch {
+                                preferencesRepository.updateAppSettings {
+                                    it.copy(showAllInDrawer = checked)
+                                }
+                            }
+                        }
+                    )
+                    RifCheckBoxPreferenceRow(
+                        title = "Show /r/popular in drawer",
+                        summary = "Display the /r/popular shortcut in the left navigation panel",
+                        checked = appSettings.showPopularInDrawer,
+                        onCheckedChange = { checked ->
+                            coroutineScope.launch {
+                                preferencesRepository.updateAppSettings {
+                                    it.copy(showPopularInDrawer = checked)
                                 }
                             }
                         }

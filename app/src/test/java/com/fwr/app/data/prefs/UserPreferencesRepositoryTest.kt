@@ -232,4 +232,39 @@ class UserPreferencesRepositoryTest {
         val afterReset = repo.externalBrowserRules.first { list -> list.none { it.host == "twitter.com" } }
         assertEquals(UserPreferencesRepository.DEFAULT_EXTERNAL_BROWSER_RULES, afterReset)
     }
+
+    @Test
+    fun drawerVisibilitySettingsDefaultTruePersistAndRoundTripBackup() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { tempFolder.newFile("prefs_drawer_visibility.preferences_pb") }
+        )
+        val repo = UserPreferencesRepository(dataStore, backgroundScope, testCipher)
+
+        val defaults = repo.getAppSettingsSnapshot()
+        assertTrue(defaults.showAllInDrawer)
+        assertTrue(defaults.showPopularInDrawer)
+
+        repo.updateAppSettings {
+            it.copy(
+                showAllInDrawer = false,
+                showPopularInDrawer = false
+            )
+        }
+        val updated = repo.getAppSettingsSnapshot()
+        assertFalse(updated.showAllInDrawer)
+        assertFalse(updated.showPopularInDrawer)
+
+        val backupJson = repo.exportBackupJson()
+        repo.updateAppSettings {
+            it.copy(
+                showAllInDrawer = true,
+                showPopularInDrawer = true
+            )
+        }
+        assertTrue(repo.importBackupJson(backupJson))
+        val restored = repo.getAppSettingsSnapshot()
+        assertFalse(restored.showAllInDrawer)
+        assertFalse(restored.showPopularInDrawer)
+    }
 }

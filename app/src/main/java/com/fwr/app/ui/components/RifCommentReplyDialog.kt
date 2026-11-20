@@ -63,6 +63,10 @@ fun RifCommentReplyDialog(
     parentTextToQuote: String = "",
     initialDraft: String = "",
     isSending: Boolean = false,
+    headerTitle: String? = null,
+    placeholderText: String = "Type your reply…",
+    allowEmptySubmit: Boolean = false,
+    submitContentDescription: String = "Send reply",
     onDismiss: () -> Unit,
     onSend: (String) -> Unit
 ) {
@@ -70,9 +74,10 @@ fun RifCommentReplyDialog(
     val coroutineScope = rememberCoroutineScope()
     val prefsRepo = remember(context) { UserPreferencesRepository.getInstance(context) }
     val persistedDrafts by prefsRepo.savedDrafts.collectAsStateWithLifecycle()
-    var replyBody by remember { mutableStateOf(initialDraft) }
-    var savedDraft by remember { mutableStateOf(initialDraft) }
+    var replyBody by remember(headerTitle, recipientName, initialDraft) { mutableStateOf(initialDraft) }
+    var savedDraft by remember(headerTitle, recipientName, initialDraft) { mutableStateOf(initialDraft) }
     val availableDraft = savedDraft.ifBlank { persistedDrafts.firstOrNull().orEmpty() }
+    val canSubmit = allowEmptySubmit || replyBody.isNotBlank()
 
     Dialog(onDismissRequest = { if (!isSending) onDismiss() }) {
         Surface(
@@ -88,27 +93,38 @@ fun RifCommentReplyDialog(
                     .verticalScroll(rememberScrollState())
                     .padding(14.dp)
             ) {
-                // Header: Recipient + Posting As + Quote Parent icon
+                // Header: Title or Recipient (`-> recipient`) + Posting As + Quote Parent icon
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = "Recipient",
-                                tint = RwfPalette.DomainTextDark,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
+                        if (headerTitle != null) {
                             Text(
-                                text = recipientName,
+                                text = headerTitle,
                                 color = RwfPalette.TitleUnreadDark,
-                                fontSize = 13.sp,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
+                        } else {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                    contentDescription = "Recipient",
+                                    tint = RwfPalette.DomainTextDark,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = recipientName,
+                                    color = RwfPalette.TitleUnreadDark,
+                                    fontSize = 13.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                         Spacer(modifier = Modifier.height(3.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -168,7 +184,7 @@ fun RifCommentReplyDialog(
                     onValueChange = { replyBody = it },
                     placeholder = {
                         Text(
-                            text = "Type your reply…",
+                            text = placeholderText,
                             color = RwfPalette.DomainTextDark,
                             fontSize = 14.sp
                         )
@@ -238,16 +254,16 @@ fun RifCommentReplyDialog(
                     } else {
                         IconButton(
                             onClick = {
-                                if (replyBody.isNotBlank()) {
+                                if (canSubmit) {
                                     onSend(replyBody.trim())
                                 }
                             },
-                            enabled = replyBody.isNotBlank()
+                            enabled = canSubmit
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Send reply",
-                                tint = if (replyBody.isNotBlank()) RwfPalette.AccentDarkTheme else RwfPalette.DomainTextDark
+                                contentDescription = submitContentDescription,
+                                tint = if (canSubmit) RwfPalette.AccentDarkTheme else RwfPalette.DomainTextDark
                             )
                         }
                     }

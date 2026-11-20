@@ -3,7 +3,9 @@ package com.fwr.app.ui.comments
 import com.fwr.app.data.model.RedditComment
 import com.fwr.app.data.model.RedditListing
 import com.fwr.app.data.model.RedditListingData
+import com.fwr.app.data.model.RedditPost
 import com.fwr.app.data.model.RedditThing
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -374,5 +376,89 @@ class CommentTreeUtilsTest {
         assertEquals(420, computePreservedScrollOffset(420, viewportHeightPx = 1000))
         assertEquals(880, computePreservedScrollOffset(950, viewportHeightPx = 1000, minVisibleBottomPx = 120))
         assertEquals(0, computePreservedScrollOffset(200, viewportHeightPx = 80, minVisibleBottomPx = 120))
+    }
+
+    @Test
+    fun updateEditedCommentInTree_updatesTopLevelNestedAndDeepCommentsWithEditedFlag() {
+        val leaf = t1("c1a", body = "old leaf")
+        val parent = t1("c1", body = "old parent", replies = listOf(RedditThing(kind = "t1", data = leaf)))
+        val top = t1("c2", body = "old top")
+
+        val editedTop = updateEditedCommentInTree(listOf(parent, top), "c2", "new top")
+        assertEquals("new top", editedTop[1].body)
+        assertTrue(editedTop[1].edited)
+        assertFalse(editedTop[0].edited)
+
+        val editedNested = updateEditedCommentInTree(editedTop, "c1a", "new leaf")
+        val updatedLeaf = editedNested[0].replies?.data?.children?.firstOrNull()?.data
+        assertEquals("new leaf", updatedLeaf?.body)
+        assertTrue(updatedLeaf?.edited == true)
+
+        // Deep 600-level tree does not overflow stack
+        var deep = t1("d599", body = "old deep")
+        for (i in 598 downTo 0) {
+            deep = t1("d$i", replies = listOf(RedditThing(kind = "t1", data = deep)))
+        }
+        val editedDeep = updateEditedCommentInTree(listOf(deep), "d599", "new deep")
+        var cursor = editedDeep[0]
+        repeat(599) {
+            cursor = cursor.replies!!.data.children[0].data
+        }
+        assertEquals("d599", cursor.id)
+        assertEquals("new deep", cursor.body)
+        assertTrue(cursor.edited)
+    }
+
+    @Test
+    fun parseEditedTextFromResponse_andRedditEditedSerializerWorkCorrectly() {
+        val commentResp = """{"json":{"errors":[],"data":{"things":[{"kind":"t1","data":{"body":"Updated comment text","edited":1730000000.0}}]}}}"""
+        assertEquals("Updated comment text", parseEditedTextFromResponse(commentResp, isSelfPost = false, fallbackText = "fb"))
+
+        val postResp = """{"json":{"errors":[],"data":{"things":[{"kind":"t3","data":{"selftext":"Updated post body","edited":1730000123.0}}]}}}"""
+        assertEquals("Updated post body", parseEditedTextFromResponse(postResp, isSelfPost = true, fallbackText = "fb"))
+
+        assertEquals("fb", parseEditedTextFromResponse("not-json", isSelfPost = false, fallbackText = "fb"))
+        assertEquals("fb", parseEditedTextFromResponse("""{"json":{"errors":[],"data":{"things":[]}}}""", isSelfPost = true, fallbackText = "fb"))
+
+        val json = Json { ignoreUnknownKeys = true; isLenient = true; coerceInputValues = true }
+        val uneditedComment = json.decodeFromString(RedditComment.serializer(), """{"id":"c1","body":"hi","edited":false}""")
+        assertFalse(uneditedComment.edited)
+
+        val editedFloatComment = json.decodeFromString(RedditComment.serializer(), """{"id":"c2","body":"hi","edited":1732070000.0}""")
+        assertTrue(editedFloatComment.edited)
+
+        val editedBoolComment = json.decodeFromString(RedditComment.serializer(), """{"id":"c3","body":"hi","edited":true}""")
+        assertTrue(editedBoolComment.edited)
+
+        val editedPost = json.decodeFromString(RedditPost.serializer(), """{"id":"p1","title":"t","edited":1732070000.0}""")
+        assertTrue(editedPost.edited)
+        val uneditedPost = json.decodeFromString(RedditPost.serializer(), """{"id":"p2","title":"t","edited":false}""")
+        assertFalse(uneditedPost.edited)
+    }
+
+    @Test
+    fun normalizeCommentPermalinkBaseAndAppendContextFormatUrlsCorrectly() {
+        val post = RedditPost(
+            id = "1xz1eqj",
+            subreddit = "AfterVanced",
+            permalink = "/r/AfterVanced/comments/1xz1eqj/made_a_reddit_client/"
+        )
+        val commentRelative = RedditComment(
+            id = "19swfq4qs4o2p",
+            permalink = "/r/AfterVanced/comments/1xz1eqj/made_a_reddit_client/19swfq4qs4o2p?utm_source=share#top"
+        )
+        val base1 = normalizeCommentPermalinkBase(post, commentRelative)
+        assertEquals(
+            "https://www.reddit.com/r/AfterVanced/comments/1xz1eqj/made_a_reddit_client/19swfq4qs4o2p/",
+            base1
+        )
+
+        val commentWithoutPerma = RedditComment(id = "19swfq4qs4o2p", permalink = null)
+        assertEquals(base1, normalizeCommentPermalinkBase(post, commentWithoutPerma))
+
+        assertEquals(base1, appendContextToPermalink(base1, ""))
+        assertEquals(base1, appendContextToPermalink(base1, "   "))
+        assertEquals("$base1?context=3", appendContextToPermalink(base1, "3"))
+        assertEquals("$base1?context=0", appendContextToPermalink(base1, " 0 "))
     }
 }

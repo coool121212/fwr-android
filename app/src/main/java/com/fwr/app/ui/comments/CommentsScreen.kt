@@ -114,6 +114,7 @@ import com.fwr.app.data.network.RedditNetworkClient
 import com.fwr.app.data.prefs.UserPreferencesRepository
 import com.fwr.app.ui.components.PostCard
 import com.fwr.app.ui.components.RifAwardBadges
+import com.fwr.app.ui.components.RifCommentPermalinkDialog
 import com.fwr.app.ui.components.RifCommentReplyDialog
 import com.fwr.app.ui.components.RifMarkdownText
 import com.fwr.app.ui.settings.RifScaleTweakerDialog
@@ -155,6 +156,9 @@ fun CommentsScreen(
     post: RedditPost,
     onBackClick: () -> Unit,
     modifier: Modifier = Modifier,
+    initialFocusCommentId: String? = null,
+    initialContextDepth: Int? = null,
+    onOpenCommentPermalink: ((RedditPost, String, Int?) -> Unit)? = null,
     onOpenMediaClick: ((RedditPost) -> Unit)? = null,
     onSelectSubreddit: ((String) -> Unit)? = null,
     onOpenAuthorProfile: ((String) -> Unit)? = null,
@@ -191,8 +195,21 @@ fun CommentsScreen(
         .roundToInt()
         .coerceIn(12, 34)
 
-    var hasRequestedCommentsLoad by remember(post.id) { mutableStateOf(appSettings.autoLoadComments) }
-    var isLoading by remember(post.id) { mutableStateOf(appSettings.autoLoadComments) }
+    val initialNormalizedFocus = initialFocusCommentId?.removePrefix("t1_")?.trim()?.takeIf { it.isNotEmpty() }
+    var activeFocusCommentId by remember(post.id, initialNormalizedFocus) {
+        mutableStateOf(initialNormalizedFocus)
+    }
+    var activeContextDepth by remember(post.id, initialNormalizedFocus, initialContextDepth) {
+        mutableStateOf(initialContextDepth?.coerceAtLeast(0))
+    }
+    val isSingleCommentThread = !activeFocusCommentId.isNullOrBlank()
+
+    var hasRequestedCommentsLoad by remember(post.id, initialNormalizedFocus) {
+        mutableStateOf(appSettings.autoLoadComments || isSingleCommentThread)
+    }
+    var isLoading by remember(post.id, initialNormalizedFocus) {
+        mutableStateOf(appSettings.autoLoadComments || isSingleCommentThread)
+    }
     var isRefreshing by remember(post.id) { mutableStateOf(false) }
     var errorMessage by remember(post.id) { mutableStateOf<String?>(null) }
     var postDetail by remember(post.id) { mutableStateOf(post) }
@@ -231,6 +248,12 @@ fun CommentsScreen(
     var showScopeReauthDialog by remember { mutableStateOf(false) }
 
     var moreActionsComment by remember { mutableStateOf<RedditComment?>(null) }
+    var editingComment by remember(post.id) { mutableStateOf<RedditComment?>(null) }
+    var isEditingPost by remember(post.id) { mutableStateOf(false) }
+    var isSavingEdit by remember(post.id) { mutableStateOf(false) }
+    var inboxRepliesTarget by remember(post.id) { mutableStateOf<Pair<String, String>?>(null) }
+    var isUpdatingInboxReplies by remember(post.id) { mutableStateOf(false) }
+    var permalinkDialogComment by remember(post.id) { mutableStateOf<RedditComment?>(null) }
     var pendingDeleteComment by remember(post.id) { mutableStateOf<RedditComment?>(null) }
     var pendingDeletePost by remember(post.id) { mutableStateOf(false) }
     var isDeleting by remember(post.id) { mutableStateOf(false) }
@@ -258,7 +281,12 @@ fun CommentsScreen(
         replyParentQuoteBody = parentQuoteBody
     }
 
-    fun fetchComments(sortOverride: String? = null, isSwipeRefresh: Boolean = false) {
+    fun fetchComments(
+        sortOverride: String? = null,
+        isSwipeRefresh: Boolean = false,
+        focusCommentId: String? = activeFocusCommentId,
+        contextDepth: Int? = activeContextDepth
+    ) {
         hasRequestedCommentsLoad = true
         val cleanArticleId = post.id.removePrefix("t3_").trim()
         if (cleanArticleId.isEmpty()) {
@@ -273,12 +301,23 @@ fun CommentsScreen(
         }
         errorMessage = null
         val apiSort = sortOverride ?: apiSortForLabel(currentSortLabel)
+        val cleanFocusId = focusCommentId?.removePrefix("t1_")?.trim()?.takeIf { it.isNotEmpty() }
+        val cleanContext = contextDepth?.takeIf { it > 0 }
         coroutineScope.launch {
             runSuspendCatching {
-                RedditNetworkClient.apiService.getPostComments(
-                    articleId = cleanArticleId,
-                    sort = apiSort
-                )
+                if (cleanFocusId != null) {
+                    RedditNetworkClient.apiService.getPostSubtreeComments(
+                        articleId = cleanArticleId,
+                        commentId = cleanFocusId,
+                        sort = apiSort,
+                        context = cleanContext
+                    )
+                } else {
+                    RedditNetworkClient.apiService.getPostComments(
+                        articleId = cleanArticleId,
+                        sort = apiSort
+                    )
+                }
             }.onSuccess { listings ->
                 val fetchedPost = listings.getOrNull(0)
                     ?.data
@@ -336,9 +375,9 @@ fun CommentsScreen(
         }
     }
 
-    LaunchedEffect(post.id) {
+    LaunchedEffect(post.id, initialFocusCommentId, initialContextDepth) {
         prefsRepo.markPostClicked(post.id.ifEmpty { post.permalink })
-        if (appSettings.autoLoadComments) {
+        if (appSettings.autoLoadComments || isSingleCommentThread) {
             hasRequestedCommentsLoad = true
             fetchComments()
         } else {
@@ -713,6 +752,29 @@ fun CommentsScreen(
                             ).show()
                         }
                     )
+                    if (isOwnComment) {
+                        CommentDialogRow(
+                            text = "Edit comment",
+                            onClick = {
+                                moreActionsComment = null
+                                editingComment = targetComment
+                            }
+                        )
+                        CommentDialogRow(
+                            text = "Toggle inbox replies",
+                            onClick = {
+                                moreActionsComment = null
+                                inboxRepliesTarget = targetComment.resolvedFullname to "comment"
+                            }
+                        )
+                        CommentDialogRow(
+                            text = "Delete comment",
+                            onClick = {
+                                moreActionsComment = null
+                                pendingDeleteComment = targetComment
+                            }
+                        )
+                    }
                     CommentDialogRow(
                         text = "Copy comment text",
                         onClick = {
@@ -737,46 +799,39 @@ fun CommentsScreen(
                             MediaResolver.openSystemBrowser(context, url)
                         }
                     )
-                    CommentDialogRow(
-                        text = "Report comment",
-                        onClick = {
-                            moreActionsComment = null
-                            if (authPrefs.userAccessToken.isNullOrBlank()) {
-                                Toast.makeText(
-                                    context,
-                                    "Sign in via Settings to report comments",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                coroutineScope.launch {
-                                    runSuspendCatching {
-                                        RedditNetworkClient.apiService.reportThing(
-                                            thingId = targetComment.resolvedFullname,
-                                            reason = "other"
-                                        ).close()
-                                    }.onSuccess {
-                                        Toast.makeText(
-                                            context,
-                                            "Reported comment to Reddit",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }.onFailure { err ->
-                                        Toast.makeText(
-                                            context,
-                                            "Report failed: ${err.localizedMessage ?: "Error"}",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                }
-                            }
-                        }
-                    )
-                    if (isOwnComment) {
+                    if (!isOwnComment) {
                         CommentDialogRow(
-                            text = "Delete comment",
+                            text = "Report comment",
                             onClick = {
                                 moreActionsComment = null
-                                pendingDeleteComment = targetComment
+                                if (authPrefs.userAccessToken.isNullOrBlank()) {
+                                    Toast.makeText(
+                                        context,
+                                        "Sign in via Settings to report comments",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else {
+                                    coroutineScope.launch {
+                                        runSuspendCatching {
+                                            RedditNetworkClient.apiService.reportThing(
+                                                thingId = targetComment.resolvedFullname,
+                                                reason = "other"
+                                            ).close()
+                                        }.onSuccess {
+                                            Toast.makeText(
+                                                context,
+                                                "Reported comment to Reddit",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }.onFailure { err ->
+                                            Toast.makeText(
+                                                context,
+                                                "Report failed: ${err.localizedMessage ?: "Error"}",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                }
                             }
                         )
                     }
@@ -989,7 +1044,23 @@ fun CommentsScreen(
                             }
                         }
                     )
+                    if (isOwnPost && postDetail.is_self) {
+                        CommentDialogRow(
+                            text = "Edit post",
+                            onClick = {
+                                showOpActionsDialog = false
+                                isEditingPost = true
+                            }
+                        )
+                    }
                     if (isOwnPost) {
+                        CommentDialogRow(
+                            text = "Toggle inbox replies",
+                            onClick = {
+                                showOpActionsDialog = false
+                                inboxRepliesTarget = postDetail.resolvedFullname to "post"
+                            }
+                        )
                         CommentDialogRow(
                             text = "Delete post",
                             onClick = {
@@ -1001,6 +1072,212 @@ fun CommentsScreen(
                 }
             }
         }
+    }
+
+    editingComment?.let { targetComment ->
+        RifCommentReplyDialog(
+            recipientName = "",
+            activeUsername = activeUsername,
+            initialDraft = targetComment.body,
+            isSending = isSavingEdit,
+            headerTitle = "Edit comment",
+            placeholderText = "Edit comment…",
+            allowEmptySubmit = false,
+            submitContentDescription = "Save edit",
+            onDismiss = { if (!isSavingEdit) editingComment = null },
+            onSend = { editedBody ->
+                if (authPrefs.userAccessToken.isNullOrBlank()) {
+                    Toast.makeText(
+                        context,
+                        "Sign in via Manage accounts / BYOK Settings to edit comments",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@RifCommentReplyDialog
+                }
+                isSavingEdit = true
+                coroutineScope.launch {
+                    runSuspendCatching {
+                        val responseBody = RedditNetworkClient.apiService.editUserText(
+                            thingId = targetComment.resolvedFullname,
+                            markdownText = editedBody
+                        ).use { it.string() }
+                        RedditOAuthManager.extractRedditApiError(responseBody)?.let { apiErr ->
+                            throw IllegalStateException(apiErr)
+                        }
+                        parseEditedTextFromResponse(
+                            responseBody = responseBody,
+                            isSelfPost = false,
+                            fallbackText = editedBody
+                        )
+                    }.onSuccess { updatedBody ->
+                        isSavingEdit = false
+                        editingComment = null
+                        rootComments = updateEditedCommentInTree(
+                            tree = rootComments,
+                            commentId = targetComment.id,
+                            newBody = updatedBody
+                        )
+                        Toast.makeText(context, "Comment updated", Toast.LENGTH_SHORT).show()
+                    }.onFailure { err ->
+                        isSavingEdit = false
+                        if (err.message?.contains("403") == true) {
+                            showScopeReauthDialog = true
+                        }
+                        Toast.makeText(
+                            context,
+                            "Failed to edit comment: ${err.localizedMessage ?: "Error"}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+        )
+    }
+
+    if (isEditingPost) {
+        RifCommentReplyDialog(
+            recipientName = "",
+            activeUsername = activeUsername,
+            initialDraft = postDetail.selftext,
+            isSending = isSavingEdit,
+            headerTitle = "Edit post",
+            placeholderText = "Edit post text…",
+            allowEmptySubmit = true,
+            submitContentDescription = "Save edit",
+            onDismiss = { if (!isSavingEdit) isEditingPost = false },
+            onSend = { editedBody ->
+                if (authPrefs.userAccessToken.isNullOrBlank()) {
+                    Toast.makeText(
+                        context,
+                        "Sign in via Manage accounts / BYOK Settings to edit posts",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@RifCommentReplyDialog
+                }
+                isSavingEdit = true
+                coroutineScope.launch {
+                    runSuspendCatching {
+                        val responseBody = RedditNetworkClient.apiService.editUserText(
+                            thingId = postDetail.resolvedFullname,
+                            markdownText = editedBody
+                        ).use { it.string() }
+                        RedditOAuthManager.extractRedditApiError(responseBody)?.let { apiErr ->
+                            throw IllegalStateException(apiErr)
+                        }
+                        parseEditedTextFromResponse(
+                            responseBody = responseBody,
+                            isSelfPost = true,
+                            fallbackText = editedBody
+                        )
+                    }.onSuccess { updatedSelftext ->
+                        isSavingEdit = false
+                        isEditingPost = false
+                        postDetail = postDetail.copy(selftext = updatedSelftext, edited = true)
+                        Toast.makeText(context, "Post updated", Toast.LENGTH_SHORT).show()
+                    }.onFailure { err ->
+                        isSavingEdit = false
+                        if (err.message?.contains("403") == true) {
+                            showScopeReauthDialog = true
+                        }
+                        Toast.makeText(
+                            context,
+                            "Failed to edit post: ${err.localizedMessage ?: "Error"}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+        )
+    }
+
+    inboxRepliesTarget?.let { (targetFullname, targetKindLabel) ->
+        fun submitInboxRepliesState(enabled: Boolean) {
+            if (authPrefs.userAccessToken.isNullOrBlank()) {
+                Toast.makeText(
+                    context,
+                    "Sign in via Manage accounts / BYOK Settings to update $targetKindLabel settings",
+                    Toast.LENGTH_SHORT
+                ).show()
+                inboxRepliesTarget = null
+                return
+            }
+            isUpdatingInboxReplies = true
+            coroutineScope.launch {
+                runSuspendCatching {
+                    RedditNetworkClient.apiService.setSendReplies(
+                        fullname = targetFullname,
+                        state = enabled
+                    )
+                }.onSuccess {
+                    isUpdatingInboxReplies = false
+                    inboxRepliesTarget = null
+                    Toast.makeText(
+                        context,
+                        if (enabled) "Inbox replies enabled" else "Inbox replies disabled",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }.onFailure { err ->
+                    isUpdatingInboxReplies = false
+                    if (err.message?.contains("403") == true) {
+                        showScopeReauthDialog = true
+                    }
+                    Toast.makeText(
+                        context,
+                        "Failed to update inbox replies: ${err.localizedMessage ?: "Error"}",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { if (!isUpdatingInboxReplies) inboxRepliesTarget = null },
+            containerColor = RwfPalette.CardBackgroundDark,
+            titleContentColor = RwfPalette.TitleUnreadDark,
+            title = { Text("Toggle inbox replies") },
+            text = {
+                Text(
+                    text = "Receive replies in your inbox?",
+                    color = RwfPalette.TitleUnreadDark,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isUpdatingInboxReplies,
+                    onClick = { submitInboxRepliesState(enabled = true) }
+                ) {
+                    Text("Yes", color = RwfPalette.AccentDarkTheme, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isUpdatingInboxReplies,
+                    onClick = { submitInboxRepliesState(enabled = false) }
+                ) {
+                    Text("No", color = RwfPalette.DomainTextDark)
+                }
+            }
+        )
+    }
+
+    permalinkDialogComment?.let { comment ->
+        RifCommentPermalinkDialog(
+            basePermalinkUrl = normalizeCommentPermalinkBase(postDetail, comment),
+            shareSubject = "Comment by ${comment.author}",
+            onDismiss = { permalinkDialogComment = null },
+            onGo = { ctxDepth ->
+                permalinkDialogComment = null
+                if (onOpenCommentPermalink != null) {
+                    onOpenCommentPermalink(postDetail, comment.id, ctxDepth)
+                } else {
+                    activeFocusCommentId = comment.id
+                    activeContextDepth = ctxDepth
+                    selectedCommentId = null
+                    fetchComments(focusCommentId = comment.id, contextDepth = ctxDepth)
+                }
+            }
+        )
     }
 
     if (pendingDeletePost) {
@@ -1497,133 +1774,168 @@ fun CommentsScreen(
                 val currentSortApi = apiSortForLabel(currentSortLabel)
                 val isSuggested = !postDetail.suggested_sort.isNullOrBlank() &&
                     postDetail.suggested_sort.equals(currentSortApi, ignoreCase = true)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(RwfPalette.CardBackgroundDark)
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Box {
-                        Column(
-                            modifier = Modifier.clickable { sortDropdownExpanded = true },
-                            verticalArrangement = Arrangement.spacedBy(1.dp)
-                        ) {
-                            Text(
-                                text = "${postDetail.num_comments} comments",
-                                color = RwfPalette.MetadataTextDark,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                            Text(
-                                text = buildString {
-                                    append("sorted by ${currentSortLabel.lowercase()}")
-                                    if (isSuggested) append(" (suggested)")
-                                },
-                                color = RwfPalette.MetadataTextDark,
-                                fontSize = 12.sp
-                            )
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(RwfPalette.CardBackgroundDark)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Box {
+                            Column(
+                                modifier = Modifier.clickable { sortDropdownExpanded = true },
+                                verticalArrangement = Arrangement.spacedBy(1.dp)
+                            ) {
+                                Text(
+                                    text = if (isSingleCommentThread) {
+                                        "single comment thread"
+                                    } else {
+                                        "${postDetail.num_comments} comments"
+                                    },
+                                    color = if (isSingleCommentThread) {
+                                        RwfPalette.TitleUnreadDark
+                                    } else {
+                                        RwfPalette.MetadataTextDark
+                                    },
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    text = buildString {
+                                        append("sorted by ${currentSortLabel.lowercase()}")
+                                        if (!isSingleCommentThread && isSuggested) append(" (suggested)")
+                                    },
+                                    color = RwfPalette.MetadataTextDark,
+                                    fontSize = 12.sp
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = sortDropdownExpanded,
+                                onDismissRequest = { sortDropdownExpanded = false },
+                                modifier = Modifier.background(RwfPalette.CardBackgroundDark)
+                            ) {
+                                COMMENT_SORT_OPTIONS.forEach { (label, apiValue) ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = label,
+                                                color = if (label == currentSortLabel) RwfPalette.AccentDarkTheme else RwfPalette.TitleUnreadDark,
+                                                fontSize = 15.sp,
+                                                fontWeight = if (label == currentSortLabel) FontWeight.Bold else FontWeight.Normal
+                                            )
+                                        },
+                                        onClick = {
+                                            sortDropdownExpanded = false
+                                            currentSortLabel = label
+                                            hasRequestedCommentsLoad = true
+                                            fetchComments(sortOverride = apiValue)
+                                        }
+                                    )
+                                }
+                            }
                         }
 
-                        DropdownMenu(
-                            expanded = sortDropdownExpanded,
-                            onDismissRequest = { sortDropdownExpanded = false },
-                            modifier = Modifier.background(RwfPalette.CardBackgroundDark)
-                        ) {
-                            COMMENT_SORT_OPTIONS.forEach { (label, apiValue) ->
+                        Box {
+                            Box(
+                                modifier = Modifier
+                                    .size(24.dp)
+                                    .clickable { actionsMenuExpanded = true },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Settings,
+                                    contentDescription = "Comment actions",
+                                    tint = RwfPalette.MetadataTextDark,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = actionsMenuExpanded,
+                                onDismissRequest = { actionsMenuExpanded = false },
+                                modifier = Modifier.background(RwfPalette.CardBackgroundDark)
+                            ) {
                                 DropdownMenuItem(
                                     text = {
                                         Text(
-                                            text = label,
-                                            color = if (label == currentSortLabel) RwfPalette.AccentDarkTheme else RwfPalette.TitleUnreadDark,
-                                            fontSize = 15.sp,
-                                            fontWeight = if (label == currentSortLabel) FontWeight.Bold else FontWeight.Normal
+                                            text = "Sort comments (${currentSortLabel.lowercase()})",
+                                            color = RwfPalette.TitleUnreadDark,
+                                            fontSize = 15.sp
                                         )
                                     },
                                     onClick = {
-                                        sortDropdownExpanded = false
-                                        currentSortLabel = label
-                                        hasRequestedCommentsLoad = true
-                                        fetchComments(sortOverride = apiValue)
+                                        actionsMenuExpanded = false
+                                        sortDropdownExpanded = true
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = "Find comment",
+                                            color = RwfPalette.TitleUnreadDark,
+                                            fontSize = 15.sp
+                                        )
+                                    },
+                                    onClick = {
+                                        actionsMenuExpanded = false
+                                        showFindBar = !showFindBar
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Text(
+                                            text = if (childCommentsCollapsed) "Expand all child comments" else "Collapse all child comments",
+                                            color = RwfPalette.TitleUnreadDark,
+                                            fontSize = 15.sp
+                                        )
+                                    },
+                                    onClick = {
+                                        actionsMenuExpanded = false
+                                        val nextState = !childCommentsCollapsed
+                                        childCommentsCollapsed = nextState
+                                        rootComments.forEach { top ->
+                                            top.replies?.data?.children?.forEach { child ->
+                                                if (child.kind == "t1") {
+                                                    collapsedCommentIds[child.data.id] = nextState
+                                                }
+                                            }
+                                        }
+                                        collapseVersion++
                                     }
                                 )
                             }
                         }
                     }
-
-                    Box {
+                    HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
+                    if (isSingleCommentThread) {
                         Box(
                             modifier = Modifier
-                                .size(24.dp)
-                                .clickable { actionsMenuExpanded = true },
-                            contentAlignment = Alignment.Center
+                                .fillMaxWidth()
+                                .background(backgroundColor)
+                                .clickable {
+                                    activeFocusCommentId = null
+                                    activeContextDepth = null
+                                    selectedCommentId = null
+                                    fetchComments(
+                                        focusCommentId = null,
+                                        contextDepth = null
+                                    )
+                                }
+                                .padding(horizontal = 12.dp, vertical = 14.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Settings,
-                                contentDescription = "Comment actions",
-                                tint = RwfPalette.MetadataTextDark,
-                                modifier = Modifier.size(20.dp)
+                            Text(
+                                text = "view the rest of the comments →",
+                                color = RwfPalette.CyanLinkDark,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
                             )
                         }
-
-                        DropdownMenu(
-                            expanded = actionsMenuExpanded,
-                            onDismissRequest = { actionsMenuExpanded = false },
-                            modifier = Modifier.background(RwfPalette.CardBackgroundDark)
-                        ) {
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = "Sort comments (${currentSortLabel.lowercase()})",
-                                        color = RwfPalette.TitleUnreadDark,
-                                        fontSize = 15.sp
-                                    )
-                                },
-                                onClick = {
-                                    actionsMenuExpanded = false
-                                    sortDropdownExpanded = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = "Find comment",
-                                        color = RwfPalette.TitleUnreadDark,
-                                        fontSize = 15.sp
-                                    )
-                                },
-                                onClick = {
-                                    actionsMenuExpanded = false
-                                    showFindBar = !showFindBar
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        text = if (childCommentsCollapsed) "Expand all child comments" else "Collapse all child comments",
-                                        color = RwfPalette.TitleUnreadDark,
-                                        fontSize = 15.sp
-                                    )
-                                },
-                                onClick = {
-                                    actionsMenuExpanded = false
-                                    val nextState = !childCommentsCollapsed
-                                    childCommentsCollapsed = nextState
-                                    rootComments.forEach { top ->
-                                        top.replies?.data?.children?.forEach { child ->
-                                            if (child.kind == "t1") {
-                                                collapsedCommentIds[child.data.id] = nextState
-                                            }
-                                        }
-                                    }
-                                    collapseVersion++
-                                }
-                            )
-                        }
+                        HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
                     }
                 }
-                HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
             }
 
             // 4. Loading / Error / Comments Tree
@@ -1720,6 +2032,8 @@ fun CommentsScreen(
                         val comment = node.comment
                         val isCollapsed = collapsedCommentIds[comment.id] == true
                         val isSelected = selectedCommentId == comment.id
+                        val isFocusedComment = !activeFocusCommentId.isNullOrBlank() &&
+                            comment.id == activeFocusCommentId
                         val initialVote = when (comment.likes) {
                             true -> 1
                             false -> -1
@@ -1747,6 +2061,7 @@ fun CommentsScreen(
                                 comment = comment,
                                 depth = node.depth,
                                 isSelected = isSelected,
+                                isFocusedComment = isFocusedComment,
                                 isSearchMatch = isHighlightMatch,
                                 voteDirection = voteDirection,
                                 showGuideLines = appSettings.showCommentGuideLines,
@@ -1808,13 +2123,7 @@ fun CommentsScreen(
                                 },
                                 onMoreActions = { moreActionsComment = comment },
                                 onSharePermalink = {
-                                    val url = buildCommentPermalinkUrl(postDetail, comment)
-                                    val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = "text/plain"
-                                        putExtra(Intent.EXTRA_SUBJECT, "Comment by ${comment.author}")
-                                        putExtra(Intent.EXTRA_TEXT, url)
-                                    }
-                                    context.startActivity(Intent.createChooser(sendIntent, "Share comment"))
+                                    permalinkDialogComment = comment
                                 },
                                 onReply = {
                                     openReplyDialog(
@@ -1870,6 +2179,7 @@ private fun RifCommentRow(
     comment: RedditComment,
     depth: Int,
     isSelected: Boolean,
+    isFocusedComment: Boolean = false,
     isSearchMatch: Boolean,
     voteDirection: Int,
     showGuideLines: Boolean,
@@ -1894,6 +2204,7 @@ private fun RifCommentRow(
 ) {
     val targetBg = when {
         isSelected -> RwfPalette.SelectedPostRowDark
+        isFocusedComment -> RwfPalette.HighlightedDirectCommentBg
         isSearchMatch -> if (RwfPalette.isDark) Color(0xFF332D1B) else Color(0xFFFFF3CD)
         else -> baseBackgroundColor
     }
@@ -2034,9 +2345,15 @@ private fun RifCommentRow(
                         )
 
                         val relTime = formatCommentTime(comment.created_utc)
-                        if (relTime.isNotEmpty()) {
+                        val timeWithEdited = when {
+                            relTime.isNotEmpty() && comment.edited -> "$relTime*"
+                            relTime.isNotEmpty() -> relTime
+                            comment.edited -> "*"
+                            else -> ""
+                        }
+                        if (timeWithEdited.isNotEmpty()) {
                             Text(
-                                text = relTime,
+                                text = timeWithEdited,
                                 color = RwfPalette.DomainTextDark,
                                 fontSize = 12.sp
                             )
@@ -2235,9 +2552,15 @@ private fun RifHiddenCommentRow(
                 fontStyle = FontStyle.Italic
             )
             val rel = formatCommentTime(comment.created_utc)
-            if (rel.isNotEmpty()) {
+            val timeWithEdited = when {
+                rel.isNotEmpty() && comment.edited -> "$rel*"
+                rel.isNotEmpty() -> rel
+                comment.edited -> "*"
+                else -> ""
+            }
+            if (timeWithEdited.isNotEmpty()) {
                 Text(
-                    text = rel,
+                    text = timeWithEdited,
                     color = RwfPalette.DomainTextDark,
                     fontSize = 12.sp,
                     fontStyle = FontStyle.Italic

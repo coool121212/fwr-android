@@ -110,7 +110,7 @@ class FeedViewModelTest {
             return searchHandler?.invoke(null, query, includeOver18, after) ?: throw UnsupportedOperationException()
         }
         override suspend fun getPostComments(articleId: String, sort: String?, limit: Int?, depth: Int?, rawJson: Int): List<RedditListing<Any>> = throw UnsupportedOperationException()
-        override suspend fun getPostSubtreeComments(articleId: String, commentId: String, sort: String?, limit: Int, depth: Int, rawJson: Int): List<RedditListing<Any>> = throw UnsupportedOperationException()
+        override suspend fun getPostSubtreeComments(articleId: String, commentId: String, sort: String?, limit: Int, depth: Int, context: Int?, rawJson: Int): List<RedditListing<Any>> = throw UnsupportedOperationException()
         override suspend fun getMoreChildren(linkId: String, childrenCsv: String, apiType: String, rawJson: Int): MoreChildrenResponse = throw UnsupportedOperationException()
         override suspend fun getSubredditAbout(sub: String): SubredditAboutWrapper = throw UnsupportedOperationException()
         override suspend fun getSubscribedSubreddits(after: String?): RedditListing<SubredditAbout> = throw UnsupportedOperationException()
@@ -128,6 +128,8 @@ class FeedViewModelTest {
         override suspend fun composeMessage(recipient: String, subject: String, body: String, apiType: String): ResponseBody = throw UnsupportedOperationException()
         override suspend fun reportThing(thingId: String, reason: String, apiType: String): ResponseBody = throw UnsupportedOperationException()
         override suspend fun deleteThing(fullname: String) = throw UnsupportedOperationException()
+        override suspend fun editUserText(thingId: String, markdownText: String, apiType: String, rawJson: Int): ResponseBody = throw UnsupportedOperationException()
+        override suspend fun setSendReplies(fullname: String, state: Boolean) = throw UnsupportedOperationException()
     }
 
     @Test

@@ -4,11 +4,16 @@ import androidx.compose.runtime.Immutable
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 
 /**
  * Represents a Reddit comment ('t1' thing) with support for nested replies.
@@ -66,6 +71,9 @@ data class RedditComment(
     val is_submitter: Boolean = false,
     @SerialName("score_hidden")
     val score_hidden: Boolean = false,
+    @SerialName("edited")
+    @Serializable(with = RedditEditedSerializer::class)
+    val edited: Boolean = false,
     @SerialName("count")
     val count: Int? = null,
     @SerialName("children")
@@ -107,5 +115,24 @@ object CommentRepliesSerializer : KSerializer<RedditListing<RedditComment>?> {
         } else {
             delegateSerializer.serialize(encoder, value)
         }
+    }
+}
+
+/**
+ * Reddit encodes `edited` as `false` when unedited or as a Unix timestamp float when edited.
+ */
+object RedditEditedSerializer : KSerializer<Boolean> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("RedditEdited", PrimitiveKind.BOOLEAN)
+
+    override fun deserialize(decoder: Decoder): Boolean {
+        val jsonDecoder = decoder as? JsonDecoder
+            ?: return decoder.decodeBoolean()
+        val element = jsonDecoder.decodeJsonElement() as? JsonPrimitive ?: return false
+        return element.booleanOrNull == true || (element.doubleOrNull ?: 0.0) > 0.0
+    }
+
+    override fun serialize(encoder: Encoder, value: Boolean) {
+        encoder.encodeBoolean(value)
     }
 }

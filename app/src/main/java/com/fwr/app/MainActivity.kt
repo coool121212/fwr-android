@@ -100,28 +100,61 @@ class MainActivity : ComponentActivity() {
     private lateinit var preferencesRepository: UserPreferencesRepository
     private lateinit var oauthManager: RedditOAuthManager
 
+    private data class PostNavEntry(
+        val post: RedditPost,
+        val focusCommentId: String? = null,
+        val contextDepth: Int? = null
+    )
+
     private var showSettingsScreen by mutableStateOf(false)
     private var selectedProfileUsername by mutableStateOf<String?>(null)
     private var selectedInboxWhere by mutableStateOf<String?>(null)
-    private var selectedPost by mutableStateOf<RedditPost?>(null)
-    private var postBackStack by mutableStateOf<List<RedditPost>>(emptyList())
+    private var selectedPostEntry by mutableStateOf<PostNavEntry?>(null)
+    private var postBackStack by mutableStateOf<List<PostNavEntry>>(emptyList())
     private var activeMediaPost by mutableStateOf<RedditPost?>(null)
     private var oauthStatusMessage by mutableStateOf<String?>(null)
 
-    private fun openPost(post: RedditPost) {
-        val current = selectedPost
-        if (current != null && current.id != post.id) {
+    private fun openPost(
+        post: RedditPost,
+        focusCommentId: String? = null,
+        contextDepth: Int? = null
+    ) {
+        var resolvedFocusCommentId = focusCommentId?.removePrefix("t1_")?.trim()?.takeIf { it.isNotEmpty() }
+        var resolvedContextDepth = contextDepth?.coerceAtLeast(0)
+        if (resolvedFocusCommentId == null && post.permalink.contains("/comments/")) {
+            val permalinkUrl = if (post.permalink.startsWith("http", ignoreCase = true)) {
+                post.permalink
+            } else {
+                "https://www.reddit.com/${post.permalink.trimStart('/')}"
+            }
+            val parsedTarget = MediaResolver.parseRedditLink(permalinkUrl) as? RedditLinkTarget.Post
+            if (parsedTarget != null && !parsedTarget.commentId.isNullOrBlank()) {
+                resolvedFocusCommentId = parsedTarget.commentId
+                resolvedContextDepth = resolvedContextDepth ?: parsedTarget.context
+            }
+        }
+        val nextEntry = PostNavEntry(
+            post = post,
+            focusCommentId = resolvedFocusCommentId,
+            contextDepth = resolvedContextDepth
+        )
+        val current = selectedPostEntry
+        if (current != null &&
+            (current.post.id != nextEntry.post.id ||
+                current.focusCommentId != nextEntry.focusCommentId ||
+                current.contextDepth != nextEntry.contextDepth)
+        ) {
             postBackStack = (postBackStack + current).takeLast(MAX_POST_BACK_STACK)
         }
-        selectedPost = post
+        selectedPostEntry = nextEntry
     }
 
     private fun popPostOrClear() {
         if (postBackStack.isNotEmpty()) {
-            selectedPost = postBackStack.last()
+            selectedPostEntry = postBackStack.last()
             postBackStack = postBackStack.dropLast(1)
         } else {
-            selectedPost = null
+            selectedPostEntry = null
         }
     }
 
@@ -213,17 +246,19 @@ class MainActivity : ComponentActivity() {
                                     "/comments/${target.articleId}"
                                 }
                                 openPost(
-                                    RedditPost(
+                                    post = RedditPost(
                                         id = target.articleId,
                                         subreddit = target.subreddit,
                                         title = target.title,
                                         permalink = permalink
-                                    )
+                                    ),
+                                    focusCommentId = target.commentId,
+                                    contextDepth = target.context
                                 )
                             }
                             is RedditLinkTarget.Subreddit -> {
                                 showSettingsScreen = false
-                                selectedPost = null
+                                selectedPostEntry = null
                                 postBackStack = emptyList()
                                 selectedProfileUsername = null
                                 selectedInboxWhere = null
@@ -234,7 +269,7 @@ class MainActivity : ComponentActivity() {
                             }
                             is RedditLinkTarget.User -> {
                                 showSettingsScreen = false
-                                selectedPost = null
+                                selectedPostEntry = null
                                 postBackStack = emptyList()
                                 selectedInboxWhere = null
                                 selectedProfileUsername = target.username
@@ -247,7 +282,7 @@ class MainActivity : ComponentActivity() {
 
                     val hasMediaOverlay = activeMediaPost != null || activeUrlMedia != null
                     val hasAnyOverlay = showSettingsScreen ||
-                        selectedPost != null ||
+                        selectedPostEntry != null ||
                         selectedInboxWhere != null ||
                         selectedProfileUsername != null ||
                         hasMediaOverlay ||
@@ -279,7 +314,7 @@ class MainActivity : ComponentActivity() {
                             BackHandler(
                                 enabled = !hasMediaOverlay &&
                                     selectedInboxWhere == null &&
-                                    selectedPost == null &&
+                                    selectedPostEntry == null &&
                                     !showSettingsScreen
                             ) {
                                 selectedProfileUsername = null
@@ -313,7 +348,7 @@ class MainActivity : ComponentActivity() {
                         if (selectedInboxWhere != null) {
                             BackHandler(
                                 enabled = !hasMediaOverlay &&
-                                    selectedPost == null &&
+                                    selectedPostEntry == null &&
                                     !showSettingsScreen
                             ) {
                                 selectedInboxWhere = null
@@ -342,9 +377,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
 
-                        if (selectedPost != null) {
+                        if (selectedPostEntry != null) {
                             val feedPosts = (feedUiState as? FeedUiState.Success)?.posts.orEmpty()
-                            val activePost = selectedPost!!
+                            val activeEntry = selectedPostEntry!!
+                            val activePost = activeEntry.post
                             val currentPostIndex = remember(activePost.id, feedPosts) {
                                 feedPosts.indexOfFirst { it.id == activePost.id }
                             }
@@ -355,9 +391,18 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxSize(),
                                 color = MaterialTheme.colorScheme.background
                             ) {
-                                key(activePost.id) {
+                                key(activePost.id, activeEntry.focusCommentId, activeEntry.contextDepth) {
                                     CommentsScreen(
                                         post = activePost,
+                                        initialFocusCommentId = activeEntry.focusCommentId,
+                                        initialContextDepth = activeEntry.contextDepth,
+                                        onOpenCommentPermalink = { targetPost, commentId, ctxDepth ->
+                                            openPost(
+                                                post = targetPost,
+                                                focusCommentId = commentId,
+                                                contextDepth = ctxDepth
+                                            )
+                                        },
                                         onBackClick = {
                                             popPostOrClear()
                                         },
@@ -365,26 +410,26 @@ class MainActivity : ComponentActivity() {
                                             handleMediaRouting(post)
                                         },
                                         onSelectSubreddit = { chosenSub ->
-                                            selectedPost = null
+                                            selectedPostEntry = null
                                             postBackStack = emptyList()
                                             selectedProfileUsername = null
                                             selectedInboxWhere = null
                                             feedViewModel.selectSubreddit(chosenSub)
                                         },
                                         onOpenAuthorProfile = { author ->
-                                            selectedPost = null
+                                            selectedPostEntry = null
                                             postBackStack = emptyList()
                                             selectedProfileUsername = author
                                         },
                                         onOpenSettingsClick = {
-                                            selectedPost = null
+                                            selectedPostEntry = null
                                             postBackStack = emptyList()
                                             showSettingsScreen = true
                                         },
                                         onPrevPostClick = if (currentPostIndex > 0) {
                                             {
                                                 val prevPost = feedPosts[currentPostIndex - 1]
-                                                selectedPost = prevPost
+                                                selectedPostEntry = PostNavEntry(prevPost)
                                             }
                                         } else {
                                             null
@@ -392,7 +437,7 @@ class MainActivity : ComponentActivity() {
                                         onNextPostClick = if (currentPostIndex in 0 until feedPosts.lastIndex) {
                                             {
                                                 val nextPost = feedPosts[currentPostIndex + 1]
-                                                selectedPost = nextPost
+                                                selectedPostEntry = PostNavEntry(nextPost)
                                             }
                                         } else {
                                             null
@@ -585,7 +630,7 @@ class MainActivity : ComponentActivity() {
 
     private fun completeOAuthRedirect(data: Uri) {
         val stayedInActiveFlow =
-            selectedPost != null || selectedInboxWhere != null || selectedProfileUsername != null
+            selectedPostEntry != null || selectedInboxWhere != null || selectedProfileUsername != null
         oauthStatusMessage = "Completing Reddit OAuth2 token exchange…"
         Toast.makeText(this, "Exchanging Reddit OAuth token…", Toast.LENGTH_SHORT).show()
         lifecycleScope.launch {
