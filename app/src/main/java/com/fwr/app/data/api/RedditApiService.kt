@@ -4,6 +4,7 @@ import com.fwr.app.data.model.MeResponse
 import com.fwr.app.data.model.MoreChildrenResponse
 import com.fwr.app.data.model.RedditListing
 import com.fwr.app.data.model.RedditMessage
+import com.fwr.app.data.model.RedditMultiredditWrapper
 import com.fwr.app.data.model.RedditPost
 import com.fwr.app.data.model.SubredditAbout
 import com.fwr.app.data.model.SubredditAboutWrapper
@@ -11,13 +12,16 @@ import com.fwr.app.data.model.TrophyListResponse
 import com.fwr.app.data.model.UserAboutWrapper
 import com.fwr.app.data.network.RedditNetworkClient
 import kotlinx.serialization.Contextual
+import kotlinx.serialization.json.JsonElement
 import okhttp3.ResponseBody
 import retrofit2.Response
+import retrofit2.http.DELETE
 import retrofit2.http.Field
 import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.Headers
 import retrofit2.http.POST
+import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -261,7 +265,8 @@ interface RedditApiService {
     ): ResponseBody
 
     /**
-     * Submits a new link (`kind = "link"`) or self post (`kind = "self"`) to [subreddit].
+     * Submits a new link (`kind = "link"`), self post (`kind = "self"`), or crosspost
+     * (`kind = "crosspost"`, with [crosspostFullname]) to [subreddit].
      */
     @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
     @FormUrlEncoded
@@ -273,7 +278,8 @@ interface RedditApiService {
         @Field("url") url: String? = null,
         @Field("text") text: String? = null,
         @Field("sendreplies") sendReplies: Boolean = true,
-        @Field("api_type") apiType: String = "json"
+        @Field("api_type") apiType: String = "json",
+        @Field("crosspost_fullname") crosspostFullname: String? = null
     ): ResponseBody
 
     /**
@@ -345,4 +351,149 @@ interface RedditApiService {
         @Field("id") fullname: String,
         @Field("state") state: Boolean
     ): Unit
+
+    /**
+     * Fetches the authenticated user's multireddits (`/api/multi/mine`).
+     * Reddit returns a JSON array (or listing envelope) of `LabeledMulti` wrappers.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @GET("api/multi/mine?expand_srs=false&raw_json=1")
+    suspend fun getMyMultireddits(): JsonElement
+
+    /**
+     * Fetches public multireddits owned by [username] (`/api/multi/user/{username}`).
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @GET("api/multi/user/{username}?expand_srs=false&raw_json=1")
+    suspend fun getUserMultireddits(
+        @Path("username") username: String
+    ): JsonElement
+
+    /**
+     * Fetches metadata and subreddit list for a specific multireddit.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @GET("api/multi/user/{username}/m/{multiname}?expand_srs=false&raw_json=1")
+    suspend fun getMultiredditAbout(
+        @Path("username") username: String,
+        @Path("multiname") multiname: String
+    ): RedditMultiredditWrapper
+
+    /**
+     * Fetches a paginated listing of posts from `/user/{username}/m/{multiname}/{sort}.json`.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @GET("user/{username}/m/{multiname}/{sort}.json")
+    suspend fun getMultiredditPosts(
+        @Path("username") username: String,
+        @Path("multiname") multiname: String,
+        @Path("sort") sort: String = "hot",
+        @Query("t") timeFilter: String? = null,
+        @Query("after") after: String? = null,
+        @Query("raw_json") rawJson: Int = 1
+    ): Response<RedditListing<RedditPost>>
+
+    /**
+     * Fetches a paginated listing of posts from `/me/m/{multiname}/{sort}.json`.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @GET("me/m/{multiname}/{sort}.json")
+    suspend fun getMyMultiredditPosts(
+        @Path("multiname") multiname: String,
+        @Path("sort") sort: String = "hot",
+        @Query("t") timeFilter: String? = null,
+        @Query("after") after: String? = null,
+        @Query("raw_json") rawJson: Int = 1
+    ): Response<RedditListing<RedditPost>>
+
+    /**
+     * Server-side multireddit search (`/user/{username}/m/{multiname}/search`).
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @GET("user/{username}/m/{multiname}/search.json")
+    suspend fun searchMultiredditPosts(
+        @Path("username") username: String,
+        @Path("multiname") multiname: String,
+        @Query("q") query: String,
+        @Query("restrict_sr") restrictSr: String = "on",
+        @Query("sort") sort: String = "relevance",
+        @Query("t") timeFilter: String = "all",
+        @Query("include_over_18") includeOver18: String = "on",
+        @Query("after") after: String? = null,
+        @Query("raw_json") rawJson: Int = 1
+    ): Response<RedditListing<RedditPost>>
+
+    /**
+     * Server-side multireddit search (`/me/m/{multiname}/search`).
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @GET("me/m/{multiname}/search.json")
+    suspend fun searchMyMultiredditPosts(
+        @Path("multiname") multiname: String,
+        @Query("q") query: String,
+        @Query("restrict_sr") restrictSr: String = "on",
+        @Query("sort") sort: String = "relevance",
+        @Query("t") timeFilter: String = "all",
+        @Query("include_over_18") includeOver18: String = "on",
+        @Query("after") after: String? = null,
+        @Query("raw_json") rawJson: Int = 1
+    ): Response<RedditListing<RedditPost>>
+
+    /**
+     * Creates or updates a multireddit at `/api/multi/user/{username}/m/{multiname}`.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @FormUrlEncoded
+    @PUT("api/multi/user/{username}/m/{multiname}?raw_json=1")
+    suspend fun upsertMultireddit(
+        @Path("username") username: String,
+        @Path("multiname") multiname: String,
+        @Field("model") modelJson: String
+    ): RedditMultiredditWrapper
+
+    /**
+     * Permanently deletes a multireddit owned by the authenticated user.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @DELETE("api/multi/user/{username}/m/{multiname}")
+    suspend fun deleteMultireddit(
+        @Path("username") username: String,
+        @Path("multiname") multiname: String
+    ): Unit
+
+    /**
+     * Adds [srname] to a multireddit owned by the authenticated user.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @FormUrlEncoded
+    @PUT("api/multi/user/{username}/m/{multiname}/r/{srname}?raw_json=1")
+    suspend fun addSubredditToMultireddit(
+        @Path("username") username: String,
+        @Path("multiname") multiname: String,
+        @Path("srname") srname: String,
+        @Field("model") modelJson: String
+    ): Unit
+
+    /**
+     * Removes [srname] from a multireddit owned by the authenticated user.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @DELETE("api/multi/user/{username}/m/{multiname}/r/{srname}")
+    suspend fun removeSubredditFromMultireddit(
+        @Path("username") username: String,
+        @Path("multiname") multiname: String,
+        @Path("srname") srname: String
+    ): Unit
+
+    /**
+     * Copies an existing multireddit into the authenticated user's account.
+     */
+    @Headers("User-Agent: ${RedditNetworkClient.CUSTOM_USER_AGENT}")
+    @FormUrlEncoded
+    @POST("api/multi/copy?raw_json=1")
+    suspend fun copyMultireddit(
+        @Field("from") fromPath: String,
+        @Field("to") toPath: String,
+        @Field("display_name") displayName: String
+    ): RedditMultiredditWrapper
 }

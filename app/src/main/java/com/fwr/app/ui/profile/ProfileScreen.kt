@@ -1,6 +1,7 @@
 package com.fwr.app.ui.profile
 
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -73,8 +74,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.fwr.app.data.auth.RedditOAuthManager
+import com.fwr.app.data.model.MultiredditUtils
 import com.fwr.app.data.model.RedditAward
 import com.fwr.app.data.model.RedditComment
+import com.fwr.app.data.model.RedditMultireddit
 import com.fwr.app.data.model.RedditPost
 import com.fwr.app.data.model.TrophyItem
 import com.fwr.app.data.network.RedditNetworkClient
@@ -82,6 +85,7 @@ import com.fwr.app.data.prefs.UserPreferencesRepository
 import com.fwr.app.ui.components.PostCard
 import com.fwr.app.ui.components.RifAwardBadges
 import com.fwr.app.ui.components.RifMarkdownText
+import com.fwr.app.ui.components.RwfIcons
 import com.fwr.app.ui.theme.RwfPalette
 import com.fwr.app.util.MediaResolver
 import com.fwr.app.util.runSuspendCatching
@@ -173,6 +177,7 @@ fun ProfileScreen(
         mutableIntStateOf(if (cleanUsername.equals(authPrefs.username, ignoreCase = true)) authPrefs.commentKarma else 0)
     }
     var trophies by remember(cleanUsername) { mutableStateOf<List<TrophyItem>>(emptyList()) }
+    var userMultireddits by remember(cleanUsername) { mutableStateOf<List<RedditMultireddit>>(emptyList()) }
     var historyItems by remember(cleanUsername, selectedSection) { mutableStateOf<List<Any>>(emptyList()) }
     var isLoading by remember(cleanUsername, selectedSection) { mutableStateOf(true) }
     var isRefreshing by remember(cleanUsername, selectedSection) { mutableStateOf(false) }
@@ -192,6 +197,16 @@ fun ProfileScreen(
             }
             val trophiesDeferred = async {
                 runSuspendCatching { RedditNetworkClient.apiService.getUserTrophies(cleanUsername) }
+            }
+            val multisDeferred = async {
+                runSuspendCatching {
+                    val element = if (isOwnAuthenticatedProfile) {
+                        RedditNetworkClient.apiService.getMyMultireddits()
+                    } else {
+                        RedditNetworkClient.apiService.getUserMultireddits(cleanUsername)
+                    }
+                    MultiredditUtils.parseMultiredditsJson(element)
+                }
             }
             val sectionDeferred = async {
                 runSuspendCatching {
@@ -217,6 +232,10 @@ fun ProfileScreen(
 
             trophiesDeferred.await().onSuccess { response ->
                 trophies = response.data.trophies.map { it.data }.filter { it.name.isNotBlank() }
+            }
+
+            multisDeferred.await().onSuccess { multis ->
+                userMultireddits = multis
             }
 
             sectionDeferred.await()
@@ -553,6 +572,61 @@ fun ProfileScreen(
                             }
                         }
 
+                        // Public / Own Multireddits Section
+                        if (userMultireddits.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "${userMultireddits.size} ${if (userMultireddits.size == 1) "multireddit" else "multireddits"}",
+                                color = RwfPalette.DomainTextDark,
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            )
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(
+                                    items = userMultireddits,
+                                    key = { multi -> multi.canonicalFeedKey },
+                                    contentType = { "profile_multi" }
+                                ) { multi ->
+                                    Surface(
+                                        color = RwfPalette.CardBackgroundDark,
+                                        shape = RoundedCornerShape(4.dp),
+                                        border = BorderStroke(1.dp, RwfPalette.DividerLineDark),
+                                        modifier = Modifier.clickable {
+                                            onSelectSubreddit(multi.canonicalFeedKey)
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = RwfIcons.Multireddit,
+                                                contentDescription = null,
+                                                tint = RwfPalette.AccentDarkTheme,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = multi.resolvedDisplayName,
+                                                color = RwfPalette.TitleUnreadDark,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Medium
+                                            )
+                                            Text(
+                                                text = "(${multi.subredditNames.size})",
+                                                color = RwfPalette.DomainTextDark,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         Spacer(modifier = Modifier.height(4.dp))
                         HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
                     }
@@ -660,6 +734,7 @@ fun ProfileScreen(
                                 onThumbnailClick = onThumbnailClick,
                                 onSelectSubreddit = onSelectSubreddit,
                                 onOpenAuthorProfile = onOpenAuthorProfile,
+                                onOpenCrosspostParent = onPostClick,
                                 amoledBlackBackground = appSettings.amoledBlackBackground,
                                 leftHandedMode = appSettings.leftHandedMode,
                                 showLinkFlair = appSettings.showLinkFlair,

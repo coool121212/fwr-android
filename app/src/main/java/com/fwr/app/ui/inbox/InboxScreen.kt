@@ -24,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Info
@@ -78,6 +77,7 @@ import com.fwr.app.data.network.RedditNetworkClient
 import com.fwr.app.data.prefs.UserPreferencesRepository
 import com.fwr.app.ui.components.RifCommentReplyDialog
 import com.fwr.app.ui.components.RifMarkdownText
+import com.fwr.app.ui.components.RwfIcons
 import com.fwr.app.ui.theme.RwfPalette
 import com.fwr.app.util.MediaResolver
 import com.fwr.app.util.runSuspendCatching
@@ -778,10 +778,10 @@ private fun RifInboxMessageRow(
                 }
                 IconButton(onClick = onReply, modifier = Modifier.weight(1f)) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
+                        imageVector = RwfIcons.Reply,
                         contentDescription = "Reply",
                         tint = RwfPalette.ActionStripTextDark,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }

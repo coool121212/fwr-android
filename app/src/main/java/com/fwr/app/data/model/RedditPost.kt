@@ -86,6 +86,10 @@ data class RedditPost(
     val suggested_sort: String? = null,
     @SerialName("crosspost_parent_list")
     val crosspost_parent_list: List<RedditPost> = emptyList(),
+    @SerialName("crosspost_parent")
+    val crosspost_parent: String? = null,
+    @SerialName("num_crossposts")
+    val num_crossposts: Int = 0,
     @SerialName("is_reddit_media_domain")
     val is_reddit_media_domain: Boolean = false,
     @SerialName("edited")
@@ -100,6 +104,12 @@ data class RedditPost(
     val isGallery: Boolean get() = is_gallery
     val galleryData: GalleryData? get() = gallery_data
     val mediaMetadata: Map<String, MediaMetadata>? get() = media_metadata
+    val crosspostParent: RedditPost? get() = crosspost_parent_list.firstOrNull()
+    val resolvedCrosspostParentId: String?
+        get() = crosspostParent?.id?.takeIf { it.isNotBlank() }
+            ?: crosspost_parent?.removePrefix("t3_")?.trim()?.takeIf { it.isNotEmpty() }
+    val isCrosspost: Boolean
+        get() = crosspost_parent_list.isNotEmpty() || !crosspost_parent.isNullOrBlank()
 }
 
 @Immutable

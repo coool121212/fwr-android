@@ -6,6 +6,7 @@ import com.fwr.app.data.model.MoreChildrenResponse
 import com.fwr.app.data.model.RedditListing
 import com.fwr.app.data.model.RedditListingData
 import com.fwr.app.data.model.RedditMessage
+import com.fwr.app.data.model.RedditMultiredditWrapper
 import com.fwr.app.data.model.RedditPost
 import com.fwr.app.data.model.RedditThing
 import com.fwr.app.data.model.SubredditAbout
@@ -22,6 +23,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.JsonElement
 import okhttp3.ResponseBody
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -74,6 +76,8 @@ class FeedViewModelTest {
     ) : RedditApiService {
         var callCount = 0
         var searchHandler: (suspend (sub: String?, query: String, includeOver18: String, after: String?) -> Response<RedditListing<RedditPost>>)? = null
+        val recordedMultiRequests = mutableListOf<String>()
+        val recordedMultiSearches = mutableListOf<String>()
 
         override suspend fun getSubredditPosts(
             sub: String,
@@ -96,6 +100,33 @@ class FeedViewModelTest {
             return handler("frontpage", sort, after)
         }
 
+        override suspend fun getMultiredditPosts(
+            username: String,
+            multiname: String,
+            sort: String,
+            timeFilter: String?,
+            after: String?,
+            rawJson: Int
+        ): Response<RedditListing<RedditPost>> {
+            callCount++
+            val key = "user/$username/m/$multiname"
+            recordedMultiRequests += "$key|$sort|$after"
+            return handler(key, sort, after)
+        }
+
+        override suspend fun getMyMultiredditPosts(
+            multiname: String,
+            sort: String,
+            timeFilter: String?,
+            after: String?,
+            rawJson: Int
+        ): Response<RedditListing<RedditPost>> {
+            callCount++
+            val key = "me/m/$multiname"
+            recordedMultiRequests += "$key|$sort|$after"
+            return handler(key, sort, after)
+        }
+
         override suspend fun getMe(): MeResponse = throw UnsupportedOperationException()
         override suspend fun getUserAbout(username: String): UserAboutWrapper = throw UnsupportedOperationException()
         override suspend fun getUserTrophies(username: String): TrophyListResponse = throw UnsupportedOperationException()
@@ -108,6 +139,18 @@ class FeedViewModelTest {
         override suspend fun searchAllPosts(query: String, sort: String, timeFilter: String, includeOver18: String, after: String?, rawJson: Int): Response<RedditListing<RedditPost>> {
             callCount++
             return searchHandler?.invoke(null, query, includeOver18, after) ?: throw UnsupportedOperationException()
+        }
+        override suspend fun searchMultiredditPosts(username: String, multiname: String, query: String, restrictSr: String, sort: String, timeFilter: String, includeOver18: String, after: String?, rawJson: Int): Response<RedditListing<RedditPost>> {
+            callCount++
+            val key = "user/$username/m/$multiname"
+            recordedMultiSearches += "$key|$query|$restrictSr"
+            return searchHandler?.invoke(key, query, includeOver18, after) ?: throw UnsupportedOperationException()
+        }
+        override suspend fun searchMyMultiredditPosts(multiname: String, query: String, restrictSr: String, sort: String, timeFilter: String, includeOver18: String, after: String?, rawJson: Int): Response<RedditListing<RedditPost>> {
+            callCount++
+            val key = "me/m/$multiname"
+            recordedMultiSearches += "$key|$query|$restrictSr"
+            return searchHandler?.invoke(key, query, includeOver18, after) ?: throw UnsupportedOperationException()
         }
         override suspend fun getPostComments(articleId: String, sort: String?, limit: Int?, depth: Int?, rawJson: Int): List<RedditListing<Any>> = throw UnsupportedOperationException()
         override suspend fun getPostSubtreeComments(articleId: String, commentId: String, sort: String?, limit: Int, depth: Int, context: Int?, rawJson: Int): List<RedditListing<Any>> = throw UnsupportedOperationException()
@@ -122,7 +165,7 @@ class FeedViewModelTest {
         override suspend fun hide(fullname: String) = throw UnsupportedOperationException()
         override suspend fun unhide(fullname: String) = throw UnsupportedOperationException()
         override suspend fun postComment(parentFullname: String, markdownText: String, apiType: String): ResponseBody = throw UnsupportedOperationException()
-        override suspend fun submitPost(subreddit: String, kind: String, title: String, url: String?, text: String?, sendReplies: Boolean, apiType: String): ResponseBody = throw UnsupportedOperationException()
+        override suspend fun submitPost(subreddit: String, kind: String, title: String, url: String?, text: String?, sendReplies: Boolean, apiType: String, crosspostFullname: String?): ResponseBody = throw UnsupportedOperationException()
         override suspend fun markMessageRead(fullnamesCsv: String) = throw UnsupportedOperationException()
         override suspend fun markMessageUnread(fullnamesCsv: String) = throw UnsupportedOperationException()
         override suspend fun composeMessage(recipient: String, subject: String, body: String, apiType: String): ResponseBody = throw UnsupportedOperationException()
@@ -130,6 +173,14 @@ class FeedViewModelTest {
         override suspend fun deleteThing(fullname: String) = throw UnsupportedOperationException()
         override suspend fun editUserText(thingId: String, markdownText: String, apiType: String, rawJson: Int): ResponseBody = throw UnsupportedOperationException()
         override suspend fun setSendReplies(fullname: String, state: Boolean) = throw UnsupportedOperationException()
+        override suspend fun getMyMultireddits(): JsonElement = throw UnsupportedOperationException()
+        override suspend fun getUserMultireddits(username: String): JsonElement = throw UnsupportedOperationException()
+        override suspend fun getMultiredditAbout(username: String, multiname: String): RedditMultiredditWrapper = throw UnsupportedOperationException()
+        override suspend fun upsertMultireddit(username: String, multiname: String, modelJson: String): RedditMultiredditWrapper = throw UnsupportedOperationException()
+        override suspend fun deleteMultireddit(username: String, multiname: String) = throw UnsupportedOperationException()
+        override suspend fun addSubredditToMultireddit(username: String, multiname: String, srname: String, modelJson: String) = throw UnsupportedOperationException()
+        override suspend fun removeSubredditFromMultireddit(username: String, multiname: String, srname: String) = throw UnsupportedOperationException()
+        override suspend fun copyMultireddit(fromPath: String, toPath: String, displayName: String): RedditMultiredditWrapper = throw UnsupportedOperationException()
     }
 
     @Test
@@ -566,5 +617,75 @@ class FeedViewModelTest {
         advanceUntilIdle()
         val restoredSfw = vm.uiState.value as FeedUiState.Success
         assertEquals(listOf("sfw_1"), restoredSfw.posts.map { it.id })
+    }
+
+    @Test
+    fun selectSubreddit_multiredditFetchesPaginatesSearchesAndRestoresCache() = runTest {
+        var nowMs = 1_000_000L
+        val api = FakeRedditApiService { sub, _, after ->
+            when {
+                sub == "user/alice/m/tech" && after == null ->
+                    listingResponse(listOf(makePost("multi_1")), after = "multi_p2")
+                sub == "user/alice/m/tech" && after == "multi_p2" ->
+                    listingResponse(listOf(makePost("multi_2")), after = null)
+                else ->
+                    listingResponse(listOf(makePost("${sub}_1")), after = null)
+            }
+        }.apply {
+            searchHandler = { sub, _, _, _ ->
+                listingResponse(listOf(makePost("search_${sub}_1")), after = null)
+            }
+        }
+        val vm = FeedViewModel(
+            apiService = api,
+            usernameProvider = { "bob" },
+            clockMs = { nowMs },
+            autoLoad = false
+        )
+        vm.loadInitialFeed()
+        advanceUntilIdle()
+
+        vm.selectSubreddit("user/alice/m/tech")
+        advanceUntilIdle()
+        assertEquals("user/alice/m/tech", vm.subreddit.value)
+        assertEquals(listOf("multi_1"), (vm.uiState.value as FeedUiState.Success).posts.map { it.id })
+
+        vm.loadNextPage()
+        advanceUntilIdle()
+        assertEquals(listOf("multi_1", "multi_2"), (vm.uiState.value as FeedUiState.Success).posts.map { it.id })
+        assertEquals(
+            listOf("user/alice/m/tech|hot|null", "user/alice/m/tech|hot|multi_p2"),
+            api.recordedMultiRequests
+        )
+
+        vm.performSearch(query = "compose", restrictToSub = true, includeNsfw = true)
+        advanceUntilIdle()
+        assertEquals(listOf("user/alice/m/tech|compose|on"), api.recordedMultiSearches)
+
+        // Switching to /m/news when logged in as bob resolves to user/bob/m/news
+        vm.selectSubreddit("/m/news")
+        advanceUntilIdle()
+        assertEquals("user/bob/m/news", vm.subreddit.value)
+        assertTrue(api.recordedMultiRequests.any { it.startsWith("user/bob/m/news|hot|") })
+
+        // Back from /m/news -> search -> multi feed serves fresh cache
+        assertTrue(vm.navigateBackInFeed())
+        advanceUntilIdle()
+        assertTrue(vm.navigateBackInFeed())
+        advanceUntilIdle()
+        assertEquals("user/alice/m/tech", vm.subreddit.value)
+        assertEquals(listOf("multi_1", "multi_2"), (vm.uiState.value as FeedUiState.Success).posts.map { it.id })
+
+        // Anonymous /m/news resolves to me/m/news and uses getMyMultiredditPosts
+        val anonVm = FeedViewModel(
+            apiService = api,
+            usernameProvider = { null },
+            clockMs = { nowMs },
+            autoLoad = false
+        )
+        anonVm.selectSubreddit("/m/news")
+        advanceUntilIdle()
+        assertEquals("me/m/news", anonVm.subreddit.value)
+        assertTrue(api.recordedMultiRequests.any { it.startsWith("me/m/news|hot|") })
     }
 }

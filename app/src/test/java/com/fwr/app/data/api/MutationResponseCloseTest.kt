@@ -157,4 +157,60 @@ class MutationResponseCloseTest {
             )
         }
     }
+
+    @Test
+    fun multiredditMutationEndpointsCloseResponsesAndDoNotReturnResponseBody() = runTest {
+        val acquired = AtomicInteger(0)
+        val released = AtomicInteger(0)
+
+        val listener = object : EventListener() {
+            override fun connectionAcquired(call: Call, connection: Connection) {
+                acquired.incrementAndGet()
+            }
+
+            override fun connectionReleased(call: Call, connection: Connection) {
+                released.incrementAndGet()
+            }
+        }
+
+        val pool = ConnectionPool(1, 5, TimeUnit.SECONDS)
+        val client = OkHttpClient.Builder()
+            .connectionPool(pool)
+            .eventListener(listener)
+            .build()
+
+        val api = RedditNetworkClient.createRetrofit(
+            baseUrl = server.url("/").toString(),
+            client = client
+        ).create(RedditApiService::class.java)
+
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"name":"kotlin"}"""))
+        server.enqueue(MockResponse().setResponseCode(204))
+        server.enqueue(MockResponse().setResponseCode(204))
+
+        api.addSubredditToMultireddit("alice", "tech", "kotlin", """{"name":"kotlin"}""")
+        api.removeSubredditFromMultireddit("alice", "tech", "kotlin")
+        api.deleteMultireddit("alice", "tech")
+
+        assertEquals(3, server.requestCount)
+        assertEquals(3, acquired.get())
+        assertEquals(3, released.get())
+        assertTrue(pool.connectionCount() <= 1)
+
+        val multiMutationNames = setOf(
+            "addSubredditToMultireddit",
+            "removeSubredditFromMultireddit",
+            "deleteMultireddit"
+        )
+        val methods = RedditApiService::class.java.declaredMethods
+            .filter { it.name in multiMutationNames }
+        assertEquals(3, methods.size)
+        for (method in methods) {
+            val continuationType = method.genericParameterTypes.last().toString()
+            assertFalse(
+                "Method ${method.name} should not return ResponseBody, got $continuationType",
+                continuationType.contains(ResponseBody::class.java.name)
+            )
+        }
+    }
 }

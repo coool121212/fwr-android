@@ -14,6 +14,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.fwr.app.data.model.RedditMultireddit
 import com.fwr.app.util.runSuspendCatching
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -29,6 +30,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -263,6 +265,14 @@ class UserPreferencesRepository(
 
     val favoriteSubreddits: Flow<Set<String>> = preferencesFlow.map { prefs ->
         prefs[KEY_FAVORITE_SUBREDDITS].orEmpty()
+    }
+
+    val savedMultireddits: Flow<List<RedditMultireddit>> = preferencesFlow.map { prefs ->
+        decodeMultireddits(prefs[KEY_SAVED_MULTIREDDITS])
+    }
+
+    val favoriteMultireddits: Flow<Set<String>> = preferencesFlow.map { prefs ->
+        prefs[KEY_FAVORITE_MULTIREDDITS].orEmpty()
     }
 
     val lastNotifiedMessageId: Flow<String?> = preferencesFlow.map { prefs ->
@@ -571,6 +581,8 @@ class UserPreferencesRepository(
             prefs.remove(KEY_COMMENT_KARMA)
             prefs.remove(KEY_SUBSCRIBED_SUBREDDITS)
             prefs.remove(KEY_FAVORITE_SUBREDDITS)
+            prefs.remove(KEY_SAVED_MULTIREDDITS)
+            prefs.remove(KEY_FAVORITE_MULTIREDDITS)
             updatedSnapshot = decodeAuthPreferences(prefs)
         }
         updatedSnapshot?.let {
@@ -617,6 +629,35 @@ class UserPreferencesRepository(
         dataStore.edit { prefs ->
             val current = prefs[KEY_FAVORITE_SUBREDDITS].orEmpty()
             prefs[KEY_FAVORITE_SUBREDDITS] = if (clean in current) current - clean else current + clean
+        }
+    }
+
+    suspend fun saveMultireddits(multis: List<RedditMultireddit>) {
+        val normalized = multis
+            .filter { it.resolvedName.isNotBlank() }
+            .distinctBy { it.canonicalFeedKey.lowercase(Locale.ROOT) }
+            .sortedBy { it.resolvedDisplayName.lowercase(Locale.ROOT) }
+        dataStore.edit { prefs ->
+            prefs[KEY_SAVED_MULTIREDDITS] = multiJson.encodeToString(
+                ListSerializer(RedditMultireddit.serializer()),
+                normalized
+            )
+        }
+    }
+
+    suspend fun clearMultireddits() {
+        dataStore.edit { prefs ->
+            prefs.remove(KEY_SAVED_MULTIREDDITS)
+            prefs.remove(KEY_FAVORITE_MULTIREDDITS)
+        }
+    }
+
+    suspend fun toggleFavoriteMultireddit(canonicalFeedKey: String) {
+        val clean = canonicalFeedKey.trim().lowercase(Locale.ROOT)
+        if (clean.isEmpty()) return
+        dataStore.edit { prefs ->
+            val current = prefs[KEY_FAVORITE_MULTIREDDITS].orEmpty()
+            prefs[KEY_FAVORITE_MULTIREDDITS] = if (clean in current) current - clean else current + clean
         }
     }
 
@@ -812,6 +853,7 @@ class UserPreferencesRepository(
             )
             put("subscribedSubreddits", stringListToJsonArray(prefs[KEY_SUBSCRIBED_SUBREDDITS].orEmpty().sorted()))
             put("favoriteSubreddits", stringListToJsonArray(prefs[KEY_FAVORITE_SUBREDDITS].orEmpty().sorted()))
+            put("favoriteMultireddits", stringListToJsonArray(prefs[KEY_FAVORITE_MULTIREDDITS].orEmpty().sorted()))
             put("blockedSubreddits", stringListToJsonArray(prefs[KEY_BLOCKED_SUBREDDITS].orEmpty().sorted()))
             put("keywordFilters", stringListToJsonArray(prefs[KEY_KEYWORD_FILTERS].orEmpty().sorted()))
             put("savedDrafts", stringListToJsonArray(decodeOrderedList(prefs[KEY_SAVED_DRAFTS])))
@@ -881,6 +923,9 @@ class UserPreferencesRepository(
                 }
                 readJsonArrayStrings("favoriteSubreddits")?.let {
                     prefs[KEY_FAVORITE_SUBREDDITS] = it.map { sub -> sub.lowercase() }.toSet()
+                }
+                readJsonArrayStrings("favoriteMultireddits")?.let {
+                    prefs[KEY_FAVORITE_MULTIREDDITS] = it.map { key -> key.lowercase(Locale.ROOT) }.toSet()
                 }
                 readJsonArrayStrings("blockedSubreddits")?.let {
                     prefs[KEY_BLOCKED_SUBREDDITS] = it.map { sub -> sub.lowercase() }.toSet()
@@ -967,8 +1012,21 @@ class UserPreferencesRepository(
         return stringListToJsonArray(items).toString()
     }
 
+    private fun decodeMultireddits(raw: String?): List<RedditMultireddit> {
+        if (raw.isNullOrBlank()) return emptyList()
+        return runCatching {
+            multiJson.decodeFromString(ListSerializer(RedditMultireddit.serializer()), raw)
+        }.getOrDefault(emptyList())
+    }
+
     companion object {
         private val prettyBackupJson = Json { prettyPrint = true }
+        private val multiJson = Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            coerceInputValues = true
+            explicitNulls = false
+        }
         const val DEFAULT_CLIENT_ID = ""
         const val DEFAULT_FALLBACK_CLIENT_ID = ""
         const val DEFAULT_REDIRECT_URI = "fwr://reddit-oauth"
@@ -987,6 +1045,8 @@ class UserPreferencesRepository(
         private val KEY_COMMENT_KARMA = intPreferencesKey("reddit_comment_karma")
         private val KEY_SUBSCRIBED_SUBREDDITS = stringSetPreferencesKey("subscribed_subreddits")
         private val KEY_FAVORITE_SUBREDDITS = stringSetPreferencesKey("favorite_subreddits")
+        private val KEY_SAVED_MULTIREDDITS = stringPreferencesKey("saved_multireddits_json")
+        private val KEY_FAVORITE_MULTIREDDITS = stringSetPreferencesKey("favorite_multireddits")
         private val KEY_SUBREDDIT_CACHE_SANITIZED_V2 = booleanPreferencesKey("subreddit_cache_sanitized_v2")
         private val KEY_BLOCKED_SUBREDDITS = stringSetPreferencesKey("blocked_subreddits")
         private val KEY_KEYWORD_FILTERS = stringSetPreferencesKey("keyword_filters")

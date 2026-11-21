@@ -45,7 +45,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -116,10 +115,14 @@ import com.fwr.app.ui.components.PostCard
 import com.fwr.app.ui.components.RifAwardBadges
 import com.fwr.app.ui.components.RifCommentPermalinkDialog
 import com.fwr.app.ui.components.RifCommentReplyDialog
+import com.fwr.app.ui.components.RifCrosspostPreviewCard
+import com.fwr.app.ui.components.RifCrosspostSubmitDialog
 import com.fwr.app.ui.components.RifMarkdownText
+import com.fwr.app.ui.components.RwfIcons
 import com.fwr.app.ui.settings.RifScaleTweakerDialog
 import com.fwr.app.ui.theme.RwfPalette
 import com.fwr.app.util.MediaResolver
+import com.fwr.app.util.RedditLinkTarget
 import com.fwr.app.util.ResolvedMedia
 import com.fwr.app.util.runSuspendCatching
 import kotlinx.coroutines.launch
@@ -159,6 +162,7 @@ fun CommentsScreen(
     initialFocusCommentId: String? = null,
     initialContextDepth: Int? = null,
     onOpenCommentPermalink: ((RedditPost, String, Int?) -> Unit)? = null,
+    onOpenCrosspostParent: ((RedditPost) -> Unit)? = null,
     onOpenMediaClick: ((RedditPost) -> Unit)? = null,
     onSelectSubreddit: ((String) -> Unit)? = null,
     onOpenAuthorProfile: ((String) -> Unit)? = null,
@@ -258,6 +262,7 @@ fun CommentsScreen(
     var pendingDeletePost by remember(post.id) { mutableStateOf(false) }
     var isDeleting by remember(post.id) { mutableStateOf(false) }
     var showOpActionsDialog by remember(post.id) { mutableStateOf(false) }
+    var showCrosspostDialog by remember(post.id) { mutableStateOf(false) }
     var selectCopyTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var showScaleDialog by remember { mutableStateOf(false) }
     var isOpSaved by remember(postDetail.id, postDetail.saved) { mutableStateOf(postDetail.saved) }
@@ -430,10 +435,30 @@ fun CommentsScreen(
         resolvedPostMedia is ResolvedMedia.RedditVideo ||
         resolvedPostMedia is ResolvedMedia.RedgifsVideo
 
+    val crosspostParent = postDetail.crosspostParent
+    val crosspostFallbackId = if (crosspostParent == null) postDetail.resolvedCrosspostParentId else null
+    val showCrosspostCard = crosspostParent != null || crosspostFallbackId != null
+
+    fun openOriginalCrosspost() {
+        val target = crosspostParent ?: crosspostFallbackId?.let {
+            RedditPost(id = it, permalink = "/comments/$it")
+        } ?: return
+        if (onOpenCrosspostParent != null) {
+            onOpenCrosspostParent(target)
+        } else {
+            MediaResolver.emitRedditLinkTarget(
+                RedditLinkTarget.Post(subreddit = target.subreddit, articleId = target.id)
+            )
+        }
+    }
+
     // Offset in LazyColumn before the first comment node
-    val commentStartIndex = remember(showInlinePostMedia, postDetail.selftext) {
-        // Item 0: OP PostCard; optional media preview; optional selftext; Comment Actions Toolbar
-        2 + (if (showInlinePostMedia) 1 else 0) + (if (postDetail.selftext.isNotBlank()) 1 else 0)
+    val commentStartIndex = remember(showCrosspostCard, showInlinePostMedia, postDetail.selftext) {
+        // Item 0: OP PostCard; optional crosspost preview; optional media preview; optional selftext; Comment Actions Toolbar
+        2 +
+            (if (showCrosspostCard) 1 else 0) +
+            (if (showInlinePostMedia) 1 else 0) +
+            (if (postDetail.selftext.isNotBlank()) 1 else 0)
     }
 
     val searchMatchingIndices = remember(visibleNodes, findQuery) {
@@ -944,6 +969,44 @@ fun CommentsScreen(
                             )
                         }
                     )
+                    if (showCrosspostCard) {
+                        val suffix = crosspostParent?.subreddit?.takeIf { it.isNotBlank() }
+                            ?.let { " (/r/$it)" }.orEmpty()
+                        CommentDialogRow(
+                            text = "View original post$suffix",
+                            onClick = {
+                                showOpActionsDialog = false
+                                openOriginalCrosspost()
+                            }
+                        )
+                        if (crosspostParent != null &&
+                            crosspostParent.subreddit.isNotBlank() &&
+                            !crosspostParent.subreddit.equals(postDetail.subreddit, ignoreCase = true)
+                        ) {
+                            CommentDialogRow(
+                                text = "View /r/${crosspostParent.subreddit}",
+                                onClick = {
+                                    showOpActionsDialog = false
+                                    onSelectSubreddit?.invoke(crosspostParent.subreddit)
+                                }
+                            )
+                        }
+                    }
+                    CommentDialogRow(
+                        text = "Crosspost",
+                        onClick = {
+                            showOpActionsDialog = false
+                            if (authPrefs.userAccessToken.isNullOrBlank()) {
+                                Toast.makeText(
+                                    context,
+                                    "Sign in via Manage accounts / BYOK Settings to crosspost",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                showCrosspostDialog = true
+                            }
+                        }
+                    )
                     CommentDialogRow(
                         text = "Share/Copy",
                         onClick = {
@@ -1360,6 +1423,18 @@ fun CommentsScreen(
         )
     }
 
+    if (showCrosspostDialog) {
+        RifCrosspostSubmitDialog(
+            sourcePost = postDetail,
+            activeUsername = activeUsername,
+            onDismiss = { showCrosspostDialog = false },
+            onCrossposted = { chosenSub ->
+                showCrosspostDialog = false
+                onSelectSubreddit?.invoke(chosenSub)
+            }
+        )
+    }
+
     Scaffold(
         modifier = modifier
             .fillMaxSize()
@@ -1427,7 +1502,7 @@ fun CommentsScreen(
                         }
                     ) {
                         Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            imageVector = RwfIcons.Reply,
                             contentDescription = "Reply to post",
                             tint = topBarContentColor
                         )
@@ -1461,6 +1536,29 @@ fun CommentsScreen(
                                     onSelectSubreddit?.invoke(postDetail.subreddit)
                                 }
                             )
+                            if (showCrosspostCard) {
+                                val suffix = crosspostParent?.subreddit?.takeIf { it.isNotBlank() }
+                                    ?.let { " (/r/$it)" }.orEmpty()
+                                DropdownMenuItem(
+                                    text = { Text("View original post$suffix", color = RwfPalette.TitleUnreadDark, fontSize = 15.sp) },
+                                    onClick = {
+                                        overflowMenuExpanded = false
+                                        openOriginalCrosspost()
+                                    }
+                                )
+                                if (crosspostParent != null &&
+                                    crosspostParent.subreddit.isNotBlank() &&
+                                    !crosspostParent.subreddit.equals(postDetail.subreddit, ignoreCase = true)
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("View /r/${crosspostParent.subreddit}", color = RwfPalette.TitleUnreadDark, fontSize = 15.sp) },
+                                        onClick = {
+                                            overflowMenuExpanded = false
+                                            onSelectSubreddit?.invoke(crosspostParent.subreddit)
+                                        }
+                                    )
+                                }
+                            }
                             DropdownMenuItem(
                                 text = { Text("Find comment", color = RwfPalette.TitleUnreadDark, fontSize = 15.sp) },
                                 onClick = {
@@ -1651,6 +1749,18 @@ fun CommentsScreen(
                     },
                     onSelectSubreddit = onSelectSubreddit,
                     onOpenAuthorProfile = onOpenAuthorProfile,
+                    onOpenCrosspostParent = { openOriginalCrosspost() },
+                    onCrosspost = {
+                        if (authPrefs.userAccessToken.isNullOrBlank()) {
+                            Toast.makeText(
+                                context,
+                                "Sign in via Manage accounts / BYOK Settings to crosspost",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            showCrosspostDialog = true
+                        }
+                    },
                     amoledBlackBackground = appSettings.amoledBlackBackground,
                     leftHandedMode = appSettings.leftHandedMode,
                     showLinkFlair = appSettings.showLinkFlair,
@@ -1658,6 +1768,28 @@ fun CommentsScreen(
                     labelNsfw = appSettings.labelNsfw,
                     showInlineImages = appSettings.showInlineImages
                 )
+            }
+
+            // 1a. Embedded Crosspost Original Thread Card
+            if (showCrosspostCard) {
+                item(key = "op_crosspost_${postDetail.id}", contentType = "op_crosspost") {
+                    RifCrosspostPreviewCard(
+                        parent = crosspostParent,
+                        fallbackParentId = crosspostFallbackId,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        compact = false,
+                        showParentSelftext = postDetail.selftext.isBlank(),
+                        selectable = true,
+                        showInlineImages = appSettings.showInlineImages,
+                        labelNsfw = appSettings.labelNsfw,
+                        spoilerRevealed = spoilerRevealed,
+                        onRevealSpoiler = { spoilerRevealed = true },
+                        onOpenOriginalPost = { openOriginalCrosspost() },
+                        onSelectSubreddit = onSelectSubreddit,
+                        onOpenAuthorProfile = onOpenAuthorProfile
+                    )
+                    HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
+                }
             }
 
             // 1b. Inline OP Media Preview Card (images, galleries, videos)
@@ -2474,10 +2606,10 @@ private fun RifCommentRow(
                             modifier = Modifier.weight(1f)
                         ) {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Send,
+                                imageVector = RwfIcons.Reply,
                                 contentDescription = "Reply",
                                 tint = RwfPalette.ActionStripTextDark,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
@@ -2847,6 +2979,8 @@ private fun RifPostMediaPreviewCard(
             is ResolvedMedia.ImgurAlbum -> {
                 val posterUrl = post.preview?.images?.firstOrNull()?.source?.url?.replace("&amp;", "&")
                     ?: post.thumbnail?.takeIf { it.startsWith("http") }
+                    ?: post.crosspostParent?.preview?.images?.firstOrNull()?.source?.url?.replace("&amp;", "&")
+                    ?: post.crosspostParent?.thumbnail?.takeIf { it.startsWith("http") }
                 val badgeLabel = when (resolvedMedia) {
                     is ResolvedMedia.ImgurAlbum -> "ALBUM • Tap to view all images"
                     else -> "VIDEO • Tap to play with sound"

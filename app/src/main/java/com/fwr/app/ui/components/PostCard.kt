@@ -102,6 +102,8 @@ fun PostCard(
     onBlockSubreddit: ((String) -> Unit)? = null,
     onSelectSubreddit: ((String) -> Unit)? = null,
     onOpenAuthorProfile: ((String) -> Unit)? = null,
+    onOpenCrosspostParent: ((RedditPost) -> Unit)? = null,
+    onCrosspost: ((RedditPost) -> Unit)? = null,
     @Suppress("UNUSED_PARAMETER") amoledBlackBackground: Boolean = false,
     leftHandedMode: Boolean = false,
     showLinkFlair: Boolean = true,
@@ -141,7 +143,20 @@ fun PostCard(
     }
 
     val effectiveRead = isRead || clickedLocally || expanded
-    val domainText = remember(post.id, post.domain, post.is_self, post.subreddit, post.url) {
+    val crosspostParent = post.crosspostParent
+    val crosspostFallbackId = if (crosspostParent == null) post.resolvedCrosspostParentId else null
+    val hasCrosspost = post.isCrosspost
+    val openOriginalCrosspost = {
+        clickedLocally = true
+        onMarkRead?.invoke()
+        val target = crosspostParent ?: crosspostFallbackId?.let {
+            RedditPost(id = it, permalink = "/comments/$it")
+        }
+        if (target != null) {
+            (onOpenCrosspostParent ?: onPostClick)(target)
+        }
+    }
+    val domainText = remember(post.id, post.domain, post.is_self, post.subreddit, post.url, post.crosspost_parent_list) {
         resolveDomain(post)
     }
     val thumbnailUrl = remember(
@@ -151,6 +166,7 @@ fun PostCard(
         post.preview,
         post.media_metadata,
         post.url,
+        post.crosspost_parent_list,
         shouldShowThumbnails,
         allowHighResPreview
     ) {
@@ -168,6 +184,7 @@ fun PostCard(
         post.url,
         post.spoiler,
         post.over_18,
+        post.crosspost_parent_list,
         cardsView,
         shouldShowThumbnails,
         allowHighResPreview,
@@ -435,6 +452,10 @@ fun PostCard(
                     fontSize = 12.sp,
                     modifier = Modifier.padding(top = 1.dp)
                 )
+
+                if (hasCrosspost) {
+                    RifCrosspostBadgeRow(parentSubreddit = crosspostParent?.subreddit)
+                }
             }
 
             // Column 3 (Far Right): Scaled square thumbnail or placeholder icon
@@ -502,6 +523,20 @@ fun PostCard(
             }
         }
 
+        if (cardsView && !isOpHeaderInComments && hasCrosspost && !expanded) {
+            RifCrosspostPreviewCard(
+                parent = crosspostParent,
+                fallbackParentId = crosspostFallbackId,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                compact = true,
+                showParentSelftext = false,
+                labelNsfw = labelNsfw,
+                onOpenOriginalPost = openOriginalCrosspost,
+                onSelectSubreddit = onSelectSubreddit,
+                onOpenAuthorProfile = onOpenAuthorProfile
+            )
+        }
+
         // Animated slide-down RIF Action Bar underneath the post row when selected
         AnimatedVisibility(
             visible = expanded,
@@ -515,6 +550,23 @@ fun PostCard(
                     .fillMaxWidth()
                     .background(RwfPalette.SelectedPostRowDark)
             ) {
+                if (hasCrosspost) {
+                    RifCrosspostPreviewCard(
+                        parent = crosspostParent,
+                        fallbackParentId = crosspostFallbackId,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        compact = true,
+                        showParentSelftext = !post.is_self || post.selftext.isBlank(),
+                        showInlineImages = showInlineImages,
+                        labelNsfw = labelNsfw,
+                        spoilerRevealed = spoilerRevealed,
+                        onRevealSpoiler = { spoilerRevealed = true },
+                        onOpenOriginalPost = openOriginalCrosspost,
+                        onSelectSubreddit = onSelectSubreddit,
+                        onOpenAuthorProfile = onOpenAuthorProfile
+                    )
+                }
+
                 // Optional inline selftext preview box if self-post has body text
                 if (post.is_self && post.selftext.isNotBlank()) {
                     if (!spoilerRevealed) {
@@ -607,7 +659,9 @@ fun PostCard(
                     },
                     onBlockSubreddit = onBlockSubreddit,
                     onSelectSubreddit = onSelectSubreddit,
-                    onOpenAuthorProfile = onOpenAuthorProfile
+                    onOpenAuthorProfile = onOpenAuthorProfile,
+                    onOpenCrosspostParent = if (hasCrosspost) openOriginalCrosspost else null,
+                    onCrosspost = onCrosspost?.let { handler -> { handler(post) } }
                 )
             }
         }
@@ -637,11 +691,14 @@ private fun RifThreadActionStrip(
     onOpenComments: () -> Unit,
     onBlockSubreddit: ((String) -> Unit)? = null,
     onSelectSubreddit: ((String) -> Unit)? = null,
-    onOpenAuthorProfile: ((String) -> Unit)? = null
+    onOpenAuthorProfile: ((String) -> Unit)? = null,
+    onOpenCrosspostParent: (() -> Unit)? = null,
+    onCrosspost: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var showMoreDialog by remember { mutableStateOf(false) }
+    val crosspostParent = post.crosspostParent
 
     if (showMoreDialog) {
         RifMoreActionsDialog(
@@ -650,6 +707,26 @@ private fun RifThreadActionStrip(
             onViewSubreddit = {
                 showMoreDialog = false
                 onSelectSubreddit?.invoke(post.subreddit)
+            },
+            onViewCrosspostParent = onOpenCrosspostParent?.let { opener ->
+                {
+                    showMoreDialog = false
+                    opener()
+                }
+            },
+            onViewCrosspostSubreddit = crosspostParent?.subreddit
+                ?.takeIf { it.isNotBlank() && !it.equals(post.subreddit, ignoreCase = true) }
+                ?.let { parentSub ->
+                    {
+                        showMoreDialog = false
+                        onSelectSubreddit?.invoke(parentSub)
+                    }
+                },
+            onCrosspost = onCrosspost?.let { crossposter ->
+                {
+                    showMoreDialog = false
+                    crossposter()
+                }
             },
             onViewAuthorProfile = {
                 showMoreDialog = false
@@ -826,12 +903,16 @@ private fun RifMoreActionsDialog(
     post: RedditPost,
     onDismiss: () -> Unit,
     onViewSubreddit: () -> Unit,
+    onViewCrosspostParent: (() -> Unit)? = null,
+    onViewCrosspostSubreddit: (() -> Unit)? = null,
+    onCrosspost: (() -> Unit)? = null,
     onViewAuthorProfile: () -> Unit,
     onOpenLinkInBrowser: () -> Unit,
     onOpenCommentsInBrowser: () -> Unit,
     onReportPost: () -> Unit,
     onBlockSubreddit: () -> Unit
 ) {
+    val crosspostParent = post.crosspostParent
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             color = RwfPalette.CardBackgroundDark,
@@ -847,6 +928,26 @@ private fun RifMoreActionsDialog(
                     text = "View /r/${post.subreddit}",
                     onClick = onViewSubreddit
                 )
+                if (onViewCrosspostParent != null) {
+                    val suffix = crosspostParent?.subreddit?.takeIf { it.isNotBlank() }
+                        ?.let { " (/r/$it)" }.orEmpty()
+                    RifDialogOptionRow(
+                        text = "View original post$suffix",
+                        onClick = onViewCrosspostParent
+                    )
+                }
+                if (onViewCrosspostSubreddit != null && crosspostParent != null) {
+                    RifDialogOptionRow(
+                        text = "View /r/${crosspostParent.subreddit}",
+                        onClick = onViewCrosspostSubreddit
+                    )
+                }
+                if (onCrosspost != null) {
+                    RifDialogOptionRow(
+                        text = "Crosspost",
+                        onClick = onCrosspost
+                    )
+                }
                 RifDialogOptionRow(
                     text = "${post.author}'s profile",
                     onClick = onViewAuthorProfile
@@ -1232,7 +1333,7 @@ private fun resolveThumbnailUrl(post: RedditPost, allowHighRes: Boolean = true):
 }
 
 private fun resolveCardBannerUrl(post: RedditPost, allowHighRes: Boolean): String? {
-    val previewSource = post.preview?.images?.firstOrNull()?.let { img ->
+    val previewSource = (post.preview ?: post.crosspostParent?.preview)?.images?.firstOrNull()?.let { img ->
         if (allowHighRes) {
             img.source?.url ?: img.resolutions.lastOrNull()?.url
         } else {
@@ -1245,7 +1346,7 @@ private fun resolveCardBannerUrl(post: RedditPost, allowHighRes: Boolean): Strin
         return previewSource
     }
 
-    val firstMedia = post.media_metadata?.values?.firstOrNull()
+    val firstMedia = (post.media_metadata ?: post.crosspostParent?.media_metadata)?.values?.firstOrNull()
     val mediaUrl = if (allowHighRes) {
         firstMedia?.s?.u ?: firstMedia?.p?.lastOrNull()?.u
     } else {
@@ -1261,6 +1362,17 @@ private fun resolveCardBannerUrl(post: RedditPost, allowHighRes: Boolean): Strin
 }
 
 private fun resolveDomain(post: RedditPost): String {
+    val crosspostParent = post.crosspostParent
+    val isGenericRedditDomain = post.domain.isNullOrBlank() ||
+        post.domain.equals("reddit.com", ignoreCase = true) ||
+        post.domain.equals("www.reddit.com", ignoreCase = true)
+    if (crosspostParent != null &&
+        crosspostParent.is_self &&
+        crosspostParent.subreddit.isNotBlank() &&
+        isGenericRedditDomain
+    ) {
+        return "self.${crosspostParent.subreddit}"
+    }
     if (!post.domain.isNullOrBlank()) {
         return post.domain
     }

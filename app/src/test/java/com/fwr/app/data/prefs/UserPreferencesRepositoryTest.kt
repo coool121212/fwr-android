@@ -3,6 +3,8 @@ package com.fwr.app.data.prefs
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.fwr.app.data.model.RedditMultireddit
+import com.fwr.app.data.model.RedditMultiredditSubreddit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -266,5 +268,46 @@ class UserPreferencesRepositoryTest {
         val restored = repo.getAppSettingsSnapshot()
         assertFalse(restored.showAllInDrawer)
         assertFalse(restored.showPopularInDrawer)
+    }
+
+    @Test
+    fun multiredditsAndFavoritesPersistRoundTripAndClearOnLogout() = runTest {
+        val dataStore = PreferenceDataStoreFactory.create(
+            scope = backgroundScope,
+            produceFile = { tempFolder.newFile("prefs_multis.preferences_pb") }
+        )
+        val repo = UserPreferencesRepository(dataStore, backgroundScope, testCipher)
+
+        val multi = RedditMultireddit(
+            name = "tech",
+            display_name = "Tech Feed",
+            path = "/user/alice/m/tech",
+            owner = "alice",
+            visibility = "private",
+            can_edit = true,
+            subreddits = listOf(RedditMultiredditSubreddit("kotlin"), RedditMultiredditSubreddit("android"))
+        )
+        repo.saveMultireddits(listOf(multi))
+        val saved = repo.savedMultireddits.first { it.isNotEmpty() }
+        assertEquals(1, saved.size)
+        assertEquals("Tech Feed", saved[0].resolvedDisplayName)
+        assertEquals(listOf("android", "kotlin"), saved[0].subredditNames)
+
+        repo.toggleFavoriteMultireddit(multi.canonicalFeedKey)
+        assertEquals(setOf("user/alice/m/tech"), repo.favoriteMultireddits.first { it.isNotEmpty() })
+
+        val backupJson = repo.exportBackupJson()
+
+        repo.clearMultireddits()
+        assertTrue(repo.savedMultireddits.first().isEmpty())
+        assertTrue(repo.favoriteMultireddits.first().isEmpty())
+
+        assertTrue(repo.importBackupJson(backupJson))
+        assertEquals(setOf("user/alice/m/tech"), repo.favoriteMultireddits.first { it.isNotEmpty() })
+
+        repo.saveMultireddits(listOf(multi))
+        repo.clearTokens()
+        assertTrue(repo.savedMultireddits.first().isEmpty())
+        assertTrue(repo.favoriteMultireddits.first().isEmpty())
     }
 }

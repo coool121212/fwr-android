@@ -97,6 +97,12 @@ sealed interface RedditLinkTarget {
         val sort: String? = null
     ) : RedditLinkTarget
 
+    data class Multireddit(
+        val owner: String?,
+        val name: String,
+        val sort: String? = null
+    ) : RedditLinkTarget
+
     data class User(
         val username: String
     ) : RedditLinkTarget
@@ -318,7 +324,8 @@ object MediaResolver {
         val rawBeforeUnwrap = (post.url_overridden_by_dest ?: post.url).trim().replace("&amp;", "&")
         val rawUrl = unwrapRedditMediaUrl(rawBeforeUnwrap)
 
-        val effectivePost = post.crosspost_parent_list.firstOrNull()?.takeIf {
+        val crosspostParent = post.crosspost_parent_list.firstOrNull()
+        val effectivePost = crosspostParent?.takeIf {
             !post.is_gallery &&
                 post.media_metadata.isNullOrEmpty() &&
                 post.secure_media?.reddit_video == null &&
@@ -328,44 +335,74 @@ object MediaResolver {
                 extractRedditVideoFallbackUrl(post, rawUrl) == null
         } ?: post
 
+        val effectiveRawUrl = if (effectivePost != post) {
+            val parsedOuter = if (rawUrl.isNotBlank()) parseRedditLink(rawUrl) else null
+            val pointsToParent = parsedOuter is RedditLinkTarget.Post &&
+                (effectivePost.id.isBlank() || parsedOuter.articleId.equals(effectivePost.id, ignoreCase = true))
+            val isRelativeRedditPermalink = rawUrl.startsWith("/r/", ignoreCase = true) ||
+                rawUrl.startsWith("/comments/", ignoreCase = true)
+            if (rawUrl.isBlank() || pointsToParent || isRelativeRedditPermalink) {
+                unwrapRedditMediaUrl(
+                    (effectivePost.url_overridden_by_dest ?: effectivePost.url).trim().replace("&amp;", "&")
+                )
+            } else {
+                rawUrl
+            }
+        } else {
+            rawUrl
+        }
+
         // 1. Check for Reddit Gallery
         if (post.is_gallery ||
             !post.gallery_data?.items.isNullOrEmpty() ||
             effectivePost.is_gallery ||
             !effectivePost.gallery_data?.items.isNullOrEmpty() ||
-            rawUrl.contains("/gallery/")
+            rawUrl.contains("/gallery/") ||
+            effectiveRawUrl.contains("/gallery/")
         ) {
             val galleryEntries = extractGalleryEntries(post)
             val galleryUrls = galleryEntries.map { it.first }
             val captions = galleryEntries.map { it.second }
-            if (galleryUrls.isNotEmpty() || ((post.is_gallery || effectivePost.is_gallery) && post.id.isNotBlank())) {
+            val resolvedGalleryPostId = if (post.gallery_data?.items.isNullOrEmpty() &&
+                post.media_metadata.isNullOrEmpty() &&
+                crosspostParent != null
+            ) {
+                crosspostParent.id.ifBlank { post.id }
+            } else {
+                post.id.ifBlank { effectivePost.id }
+            }
+            if (galleryUrls.isNotEmpty() ||
+                ((post.is_gallery || effectivePost.is_gallery) && resolvedGalleryPostId.isNotBlank())
+            ) {
                 return ResolvedMedia.Gallery(
                     imageUrls = galleryUrls,
                     captions = captions,
                     title = post.title,
-                    postId = post.id
+                    postId = resolvedGalleryPostId
                 )
             }
         }
 
         // 2. Check for RedGIFs video
-        val redgifsMatch = REDGIFS_URL_PATTERN.find(rawUrl)
+        val redgifsMatch = REDGIFS_URL_PATTERN.find(effectiveRawUrl) ?: REDGIFS_URL_PATTERN.find(rawUrl)
         if (redgifsMatch != null) {
             val gifId = redgifsMatch.groupValues[1].lowercase(Locale.US)
             if (gifId.isNotBlank()) {
+                val matchedUrl = if (REDGIFS_URL_PATTERN.containsMatchIn(effectiveRawUrl)) effectiveRawUrl else rawUrl
                 return ResolvedMedia.RedgifsVideo(
                     gifId = gifId,
-                    fallbackWebUrl = rawUrl,
+                    fallbackWebUrl = matchedUrl,
                     title = post.title
                 )
             }
         }
 
         // 3. Check for Reddit Video (v.redd.it, comment video link, Imgur .gifv)
-        val videoStreamInfo = extractRedditVideoStreamInfo(post, rawUrl)
+        val videoStreamInfo = extractRedditVideoStreamInfo(post, effectiveRawUrl)
         if (videoStreamInfo != null) {
             val poster = (post.preview ?: effectivePost.preview)?.images?.firstOrNull()?.source?.url?.replace("&amp;", "&")
                 ?: post.thumbnail?.takeIf { it.startsWith("http") }
+                ?: crosspostParent?.thumbnail?.takeIf { it.startsWith("http") }
             return ResolvedMedia.RedditVideo(
                 fallbackUrl = videoStreamInfo.fallbackUrl,
                 dashUrl = videoStreamInfo.dashUrl,
@@ -378,7 +415,7 @@ object MediaResolver {
         }
 
         // 4. Check for Imgur album (/a/... or /gallery/...)
-        val parsed = parseUrl(rawUrl)
+        val parsed = parseUrl(effectiveRawUrl)
         val host = parsed?.host?.lowercase(Locale.US)?.removePrefix("www.").orEmpty()
         val segments = parsed?.pathSegments.orEmpty()
         if ((host == "imgur.com" || host == "m.imgur.com") &&
@@ -389,14 +426,14 @@ object MediaResolver {
             if (albumId.isNotBlank()) {
                 return ResolvedMedia.ImgurAlbum(
                     albumId = albumId,
-                    fallbackWebUrl = rawUrl,
+                    fallbackWebUrl = effectiveRawUrl,
                     title = post.title
                 )
             }
         }
 
         // 5. Check for Direct Image or Imgur single image link
-        val directImageUrl = extractDirectImageUrl(post, rawUrl)
+        val directImageUrl = extractDirectImageUrl(post, effectiveRawUrl)
         if (directImageUrl != null) {
             return ResolvedMedia.DirectImage(
                 url = directImageUrl,
@@ -405,12 +442,12 @@ object MediaResolver {
         }
 
         // 6. Self Post vs External Web Link
-        if (post.is_self || rawUrl.isBlank()) {
+        if (post.is_self || (effectivePost != post && effectivePost.is_self) || effectiveRawUrl.isBlank()) {
             return ResolvedMedia.SelfPost
         }
 
         return ResolvedMedia.ExternalWeb(
-            url = rawUrl,
+            url = effectiveRawUrl,
             title = post.title
         )
     }
@@ -706,8 +743,18 @@ object MediaResolver {
      * or returns `null` if the URL is not a native Reddit post, share link, subreddit, or user link.
      */
     fun parseRedditLink(rawUrl: String): RedditLinkTarget? {
-        val unwrapped = unwrapRedditMediaUrl(rawUrl)
+        var unwrapped = unwrapRedditMediaUrl(rawUrl)
         if (unwrapped.isBlank()) return null
+        if (unwrapped.startsWith("/") && !unwrapped.startsWith("//") && (
+                unwrapped.startsWith("/r/", ignoreCase = true) ||
+                    unwrapped.startsWith("/u/", ignoreCase = true) ||
+                    unwrapped.startsWith("/user/", ignoreCase = true) ||
+                    unwrapped.startsWith("/me/m/", ignoreCase = true) ||
+                    unwrapped.startsWith("/comments/", ignoreCase = true)
+                )
+        ) {
+            unwrapped = "https://www.reddit.com$unwrapped"
+        }
         val parsed = parseUrl(unwrapped) ?: return null
         val host = parsed.host.lowercase(Locale.US).removePrefix("www.").takeIf { it.isNotEmpty() } ?: return null
         val segments = parsed.pathSegments
@@ -782,6 +829,40 @@ object MediaResolver {
             if (sub.isNotBlank() && (third == null || third in SUBREDDIT_SORT_SEGMENTS)) {
                 return RedditLinkTarget.Subreddit(subreddit = sub, sort = third)
             }
+        }
+
+        // /user/{owner}/m/{multi}(/{sort}) or /u/{owner}/m/{multi}(/{sort})
+        if (segments.size >= 4 &&
+            (segments[0].equals("user", ignoreCase = true) || segments[0].equals("u", ignoreCase = true)) &&
+            segments[2].equals("m", ignoreCase = true)
+        ) {
+            val owner = segments[1]
+            val multiName = segments[3]
+            val sort = segments.getOrNull(4)?.lowercase(Locale.US)
+            if (segments.size <= 5 &&
+                owner.isNotBlank() &&
+                multiName.isNotBlank() &&
+                (sort == null || sort in SUBREDDIT_SORT_SEGMENTS)
+            ) {
+                return RedditLinkTarget.Multireddit(owner = owner, name = multiName, sort = sort)
+            }
+            return null
+        }
+
+        // /me/m/{multi}(/{sort})
+        if (segments.size >= 3 &&
+            segments[0].equals("me", ignoreCase = true) &&
+            segments[1].equals("m", ignoreCase = true)
+        ) {
+            val multiName = segments[2]
+            val sort = segments.getOrNull(3)?.lowercase(Locale.US)
+            if (segments.size <= 4 &&
+                multiName.isNotBlank() &&
+                (sort == null || sort in SUBREDDIT_SORT_SEGMENTS)
+            ) {
+                return RedditLinkTarget.Multireddit(owner = null, name = multiName, sort = sort)
+            }
+            return null
         }
 
         // /u/{username} or /user/{username}

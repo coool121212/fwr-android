@@ -399,4 +399,106 @@ class MediaResolverTest {
         assertNull(MediaResolver.findMatchingExternalBrowserRule("https://player.vimeo.com/123", rules))
         assertNull(MediaResolver.findMatchingExternalBrowserRule("https://sub.disabled.org/page", rules))
     }
+
+    @Test
+    fun parseRedditLink_handlesMultiredditsAndRelativePathsAndRejectsExtraMultiSegments() {
+        assertEquals(
+            RedditLinkTarget.Multireddit(owner = "alice", name = "tech", sort = null),
+            MediaResolver.parseRedditLink("https://www.reddit.com/user/alice/m/tech")
+        )
+        assertEquals(
+            RedditLinkTarget.Multireddit(owner = "alice", name = "tech", sort = "top"),
+            MediaResolver.parseRedditLink("https://old.reddit.com/u/alice/m/tech/top")
+        )
+        assertEquals(
+            RedditLinkTarget.Multireddit(owner = null, name = "news", sort = null),
+            MediaResolver.parseRedditLink("https://www.reddit.com/me/m/news")
+        )
+        assertNull(
+            MediaResolver.parseRedditLink("https://www.reddit.com/user/alice/m/tech/invalid_extra")
+        )
+        assertEquals(
+            RedditLinkTarget.Post(subreddit = "android", articleId = "abc99"),
+            MediaResolver.parseRedditLink("/r/android/comments/abc99/cool_slug")
+        )
+    }
+
+    @Test
+    fun resolvePost_crosspostHandlesSelfPostExternalLinkRedgifsAndGalleryPostIdFallback() {
+        val crosspostedSelf = RedditPost(
+            id = "cp_self",
+            title = "Crossposted Discussion",
+            url = "/r/Kotlin/comments/parent_self/some_slug/",
+            is_self = false,
+            crosspost_parent_list = listOf(
+                RedditPost(
+                    id = "parent_self",
+                    subreddit = "Kotlin",
+                    is_self = true,
+                    selftext = "Original body text",
+                    url = "https://www.reddit.com/r/Kotlin/comments/parent_self/some_slug/"
+                )
+            )
+        )
+        assertEquals(ResolvedMedia.SelfPost, MediaResolver.resolve(crosspostedSelf))
+
+        val crosspostedExternal = RedditPost(
+            id = "cp_ext",
+            title = "Crossposted Article",
+            url = "/r/programming/comments/parent_ext/article/",
+            is_self = false,
+            crosspost_parent_list = listOf(
+                RedditPost(
+                    id = "parent_ext",
+                    subreddit = "programming",
+                    is_self = false,
+                    url = "https://kotlinlang.org/docs/home.html"
+                )
+            )
+        )
+        assertEquals(
+            ResolvedMedia.ExternalWeb("https://kotlinlang.org/docs/home.html", "Crossposted Article"),
+            MediaResolver.resolve(crosspostedExternal)
+        )
+
+        val crosspostedRedgifs = RedditPost(
+            id = "cp_rg",
+            title = "Crossposted RG",
+            url = "/r/videos/comments/parent_rg/clip/",
+            is_self = false,
+            crosspost_parent_list = listOf(
+                RedditPost(
+                    id = "parent_rg",
+                    subreddit = "videos",
+                    is_self = false,
+                    url = "https://www.redgifs.com/watch/SampleClip"
+                )
+            )
+        )
+        assertEquals(
+            ResolvedMedia.RedgifsVideo(
+                gifId = "sampleclip",
+                fallbackWebUrl = "https://www.redgifs.com/watch/SampleClip",
+                title = "Crossposted RG"
+            ),
+            MediaResolver.resolve(crosspostedRedgifs)
+        )
+
+        val crosspostedGallery = RedditPost(
+            id = "cp_gal_child",
+            title = "Crossposted Gallery",
+            url = "/r/pics/comments/cp_gal_parent/album/",
+            is_gallery = true,
+            crosspost_parent_list = listOf(
+                RedditPost(
+                    id = "cp_gal_parent",
+                    subreddit = "pics",
+                    is_gallery = true
+                )
+            )
+        )
+        val resolvedGallery = MediaResolver.resolve(crosspostedGallery)
+        assertTrue(resolvedGallery is ResolvedMedia.Gallery)
+        assertEquals("cp_gal_parent", (resolvedGallery as ResolvedMedia.Gallery).postId)
+    }
 }

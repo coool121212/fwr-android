@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fwr.app.data.api.RedditApiService
+import com.fwr.app.data.model.MultiredditUtils
 import com.fwr.app.data.model.RedditListing
 import com.fwr.app.data.model.RedditPost
 import com.fwr.app.data.network.RateLimitException
@@ -223,30 +224,58 @@ class FeedViewModel @JvmOverloads constructor(
         if (!activeSearch.isNullOrBlank()) {
             val includeNsfw = _searchIncludeNsfw.value
             val nsfwParam = if (includeNsfw) "on" else "false"
+            val parsedMulti = MultiredditUtils.parseMultiredditPath(sub)
             val restrictToSub = _searchRestrictToSubreddit.value &&
                 !sub.equals("frontpage", ignoreCase = true) &&
                 !sub.equals("all", ignoreCase = true) &&
                 !sub.equals("popular", ignoreCase = true)
 
             suspend fun fetchSearchPage(cursor: String?): Response<RedditListing<RedditPost>> {
-                return if (restrictToSub) {
-                    apiService.searchSubredditPosts(
-                        sub = sub,
-                        query = activeSearch,
-                        restrictSr = "on",
-                        sort = _searchSort.value,
-                        timeFilter = _timeFilter.value,
-                        includeOver18 = nsfwParam,
-                        after = cursor
-                    )
-                } else {
-                    apiService.searchAllPosts(
-                        query = activeSearch,
-                        sort = _searchSort.value,
-                        timeFilter = _timeFilter.value,
-                        includeOver18 = nsfwParam,
-                        after = cursor
-                    )
+                return when {
+                    restrictToSub && parsedMulti != null -> {
+                        if (parsedMulti.owner != null) {
+                            apiService.searchMultiredditPosts(
+                                username = parsedMulti.owner,
+                                multiname = parsedMulti.name,
+                                query = activeSearch,
+                                restrictSr = "on",
+                                sort = _searchSort.value,
+                                timeFilter = _timeFilter.value,
+                                includeOver18 = nsfwParam,
+                                after = cursor
+                            )
+                        } else {
+                            apiService.searchMyMultiredditPosts(
+                                multiname = parsedMulti.name,
+                                query = activeSearch,
+                                restrictSr = "on",
+                                sort = _searchSort.value,
+                                timeFilter = _timeFilter.value,
+                                includeOver18 = nsfwParam,
+                                after = cursor
+                            )
+                        }
+                    }
+                    restrictToSub -> {
+                        apiService.searchSubredditPosts(
+                            sub = sub,
+                            query = activeSearch,
+                            restrictSr = "on",
+                            sort = _searchSort.value,
+                            timeFilter = _timeFilter.value,
+                            includeOver18 = nsfwParam,
+                            after = cursor
+                        )
+                    }
+                    else -> {
+                        apiService.searchAllPosts(
+                            query = activeSearch,
+                            sort = _searchSort.value,
+                            timeFilter = _timeFilter.value,
+                            includeOver18 = nsfwParam,
+                            after = cursor
+                        )
+                    }
                 }
             }
 
@@ -305,6 +334,33 @@ class FeedViewModel @JvmOverloads constructor(
                 timeFilter = tFilter,
                 after = after
             )
+            val listing = response.requireBodyOrThrow()
+            return FeedFetchResult(
+                posts = listing.data.children.map { it.data },
+                after = listing.data.after,
+                requestedUrl = response.raw().request.url.toString(),
+                responseCode = response.code()
+            )
+        }
+
+        val parsedMulti = MultiredditUtils.parseMultiredditPath(sub)
+        if (parsedMulti != null) {
+            val response = if (parsedMulti.owner != null) {
+                apiService.getMultiredditPosts(
+                    username = parsedMulti.owner,
+                    multiname = parsedMulti.name,
+                    sort = sortOrder,
+                    timeFilter = tFilter,
+                    after = after
+                )
+            } else {
+                apiService.getMyMultiredditPosts(
+                    multiname = parsedMulti.name,
+                    sort = sortOrder,
+                    timeFilter = tFilter,
+                    after = after
+                )
+            }
             val listing = response.requireBodyOrThrow()
             return FeedFetchResult(
                 posts = listing.data.children.map { it.data },
@@ -529,8 +585,18 @@ class FeedViewModel @JvmOverloads constructor(
         after: String?,
         throwable: Throwable
     ): String {
+        val parsedMulti = MultiredditUtils.parseMultiredditPath(sub)
         val fallbackUrl = buildString {
-            append("https://oauth.reddit.com/r/$sub/$sort?raw_json=1")
+            when {
+                sub.equals("frontpage", ignoreCase = true) ->
+                    append("https://oauth.reddit.com/$sort?raw_json=1")
+                parsedMulti != null && parsedMulti.owner != null ->
+                    append("https://oauth.reddit.com/user/${parsedMulti.owner}/m/${parsedMulti.name}/$sort?raw_json=1")
+                parsedMulti != null ->
+                    append("https://oauth.reddit.com/me/m/${parsedMulti.name}/$sort?raw_json=1")
+                else ->
+                    append("https://oauth.reddit.com/r/$sub/$sort?raw_json=1")
+            }
             if (!after.isNullOrBlank()) append("&after=$after")
         }
 
@@ -551,19 +617,15 @@ class FeedViewModel @JvmOverloads constructor(
             statusCode != null ->
                 "HTTP $statusCode ($exactUrl): ${throwable.localizedMessage ?: "Request failed"}"
             else ->
-                throwable.localizedMessage ?: "Failed to load r/$sub"
+                throwable.localizedMessage ?: "Failed to load ${MultiredditUtils.formatFeedHeaderTitle(sub)}"
         }
     }
 
     /**
-     * Switches the active subreddit, resets scroll to top, and serves fresh cache or fetches.
+     * Switches the active subreddit or multireddit, resets scroll to top, and serves fresh cache or fetches.
      */
     fun selectSubreddit(newSubreddit: String) {
-        var cleaned = newSubreddit.trim().trimStart('/')
-        if (cleaned.startsWith("r/", ignoreCase = true)) {
-            cleaned = cleaned.substring(2)
-        }
-        cleaned = cleaned.trim('/')
+        val cleaned = MultiredditUtils.normalizeFeedTarget(newSubreddit, usernameProvider())
         if (cleaned.isNotEmpty()) {
             val switching = !cleaned.equals(_subreddit.value, ignoreCase = true) || _searchQuery.value != null
             if (switching) {

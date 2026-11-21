@@ -24,9 +24,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
@@ -38,6 +41,7 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -58,9 +62,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.fwr.app.data.model.MultiredditUtils
+import com.fwr.app.data.model.RedditMultireddit
 import com.fwr.app.data.network.RedditNetworkClient
 import com.fwr.app.data.prefs.UserPreferencesRepository
+import com.fwr.app.ui.components.RifAddSubredditToMultiDialog
+import com.fwr.app.ui.components.RifCreateEditMultiredditDialog
+import com.fwr.app.ui.components.RifMultiredditDialog
 import com.fwr.app.ui.components.RifSidebarDialog
+import com.fwr.app.ui.components.RwfIcons
 import com.fwr.app.ui.theme.RwfPalette
 import com.fwr.app.util.runSuspendCatching
 import kotlinx.coroutines.launch
@@ -118,7 +128,8 @@ fun SubredditDrawer(
     onSelectSubreddit: (String) -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
-    subreddits: List<String> = DEFAULT_SUBSCRIBED_SUBREDDITS
+    subreddits: List<String> = DEFAULT_SUBSCRIBED_SUBREDDITS,
+    onOpenAuthorProfile: ((String) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
@@ -133,36 +144,55 @@ fun SubredditDrawer(
     val appSettings by prefsRepo.appSettings.collectAsStateWithLifecycle()
     val savedSubs by prefsRepo.subscribedSubreddits.collectAsStateWithLifecycle(initialValue = emptySet())
     val favoriteSubs by prefsRepo.favoriteSubreddits.collectAsStateWithLifecycle(initialValue = emptySet())
+    val savedMultis by prefsRepo.savedMultireddits.collectAsStateWithLifecycle(initialValue = emptyList())
+    val favoriteMultis by prefsRepo.favoriteMultireddits.collectAsStateWithLifecycle(initialValue = emptySet())
     val blockedSubreddits by prefsRepo.blockedSubreddits.collectAsStateWithLifecycle()
     val isLoggedIn = !authPrefs.userAccessToken.isNullOrBlank()
 
     var query by remember { mutableStateOf("") }
     var sidebarTargetSub by remember { mutableStateOf<String?>(null) }
+    var multisExpanded by remember { mutableStateOf(true) }
+    var showCreateMultiDialog by remember { mutableStateOf(false) }
+    var manageMultiTarget by remember { mutableStateOf<RedditMultireddit?>(null) }
+    var addSubToMultiTarget by remember { mutableStateOf<String?>(null) }
+    var deleteMultiConfirmTarget by remember { mutableStateOf<RedditMultireddit?>(null) }
+    var isDeletingMulti by remember { mutableStateOf(false) }
 
-    // One-time forced cache wipe on update + sync subscriptions only when authenticated
+    // One-time forced cache wipe on update + sync subscriptions & multireddits when authenticated
     LaunchedEffect(authPrefs.userAccessToken, authPrefs.username) {
         prefsRepo.ensureSubredditCacheSanitized()
         if (!isLoggedIn) {
             prefsRepo.clearSubscribedSubreddits()
+            prefsRepo.clearMultireddits()
             return@LaunchedEffect
         }
-        runSuspendCatching {
-            val collected = linkedSetOf<String>()
-            var after: String? = null
-            var pages = 0
-            while (pages < 5) {
-                val listing = RedditNetworkClient.apiService.getSubscribedSubreddits(after = after)
-                listing.data.children
-                    .map { it.data.display_name.trim().lowercase(Locale.US) }
-                    .filter { it.isNotEmpty() }
-                    .forEach { collected.add(it) }
-                after = listing.data.after?.takeIf { it.isNotBlank() }
-                pages++
-                if (after == null) break
+        launch {
+            runSuspendCatching {
+                val collected = linkedSetOf<String>()
+                var after: String? = null
+                var pages = 0
+                while (pages < 5) {
+                    val listing = RedditNetworkClient.apiService.getSubscribedSubreddits(after = after)
+                    listing.data.children
+                        .map { it.data.display_name.trim().lowercase(Locale.US) }
+                        .filter { it.isNotEmpty() }
+                        .forEach { collected.add(it) }
+                    after = listing.data.after?.takeIf { it.isNotBlank() }
+                    pages++
+                    if (after == null) break
+                }
+                collected.toSet()
+            }.onSuccess { remoteNames ->
+                prefsRepo.saveSubscribedSubreddits(remoteNames)
             }
-            collected.toSet()
-        }.onSuccess { remoteNames ->
-            prefsRepo.saveSubscribedSubreddits(remoteNames)
+        }
+        launch {
+            runSuspendCatching {
+                val element = RedditNetworkClient.apiService.getMyMultireddits()
+                MultiredditUtils.parseMultiredditsJson(element)
+            }.onSuccess { remoteMultis ->
+                prefsRepo.saveMultireddits(remoteMultis)
+            }
         }
     }
 
@@ -174,6 +204,125 @@ fun SubredditDrawer(
                 sidebarTargetSub = null
                 hideKeyboard()
                 onSelectSubreddit(chosen)
+            }
+        )
+    }
+
+    if (showCreateMultiDialog) {
+        RifCreateEditMultiredditDialog(
+            onDismiss = { showCreateMultiDialog = false },
+            onSaved = { created ->
+                showCreateMultiDialog = false
+                if (created.canonicalFeedKey.isNotBlank()) {
+                    hideKeyboard()
+                    onSelectSubreddit(created.canonicalFeedKey)
+                }
+            }
+        )
+    }
+
+    if (manageMultiTarget != null) {
+        val target = manageMultiTarget!!
+        RifMultiredditDialog(
+            multiPath = target.canonicalFeedKey,
+            initialMulti = target,
+            onDismiss = { manageMultiTarget = null },
+            onSelectSubreddit = { chosenSub ->
+                manageMultiTarget = null
+                hideKeyboard()
+                onSelectSubreddit(chosenSub)
+            },
+            onOpenAuthorProfile = { owner ->
+                manageMultiTarget = null
+                hideKeyboard()
+                onOpenAuthorProfile?.invoke(owner)
+            },
+            onMultiDeleted = {
+                manageMultiTarget = null
+                if (MultiredditUtils.normalizeFeedTarget(currentSubreddit, authPrefs.username)
+                        .equals(target.canonicalFeedKey, ignoreCase = true)
+                ) {
+                    onSelectSubreddit("frontpage")
+                }
+            }
+        )
+    }
+
+    if (addSubToMultiTarget != null) {
+        RifAddSubredditToMultiDialog(
+            subreddit = addSubToMultiTarget!!,
+            onDismiss = { addSubToMultiTarget = null }
+        )
+    }
+
+    if (deleteMultiConfirmTarget != null) {
+        val targetMulti = deleteMultiConfirmTarget!!
+        val owner = targetMulti.resolvedOwner.ifBlank { authPrefs.username.orEmpty() }
+        val slug = targetMulti.resolvedName
+        AlertDialog(
+            onDismissRequest = { if (!isDeletingMulti) deleteMultiConfirmTarget = null },
+            containerColor = RwfPalette.CardBackgroundDark,
+            titleContentColor = RwfPalette.TitleUnreadDark,
+            title = { Text("Delete multireddit?") },
+            text = {
+                Text(
+                    text = "Delete /m/${targetMulti.resolvedDisplayName} permanently? This cannot be undone.",
+                    color = RwfPalette.TitleUnreadDark,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !isDeletingMulti && owner.isNotBlank() && slug.isNotBlank(),
+                    onClick = {
+                        isDeletingMulti = true
+                        coroutineScope.launch {
+                            runSuspendCatching {
+                                RedditNetworkClient.apiService.deleteMultireddit(owner, slug)
+                            }.onSuccess {
+                                isDeletingMulti = false
+                                deleteMultiConfirmTarget = null
+                                val key = targetMulti.canonicalFeedKey.lowercase(Locale.ROOT)
+                                prefsRepo.saveMultireddits(
+                                    savedMultis.filterNot {
+                                        it.canonicalFeedKey.lowercase(Locale.ROOT) == key
+                                    }
+                                )
+                                Toast.makeText(
+                                    context,
+                                    "Deleted /m/${targetMulti.resolvedDisplayName}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                if (MultiredditUtils.normalizeFeedTarget(currentSubreddit, authPrefs.username)
+                                        .equals(targetMulti.canonicalFeedKey, ignoreCase = true)
+                                ) {
+                                    onSelectSubreddit("frontpage")
+                                }
+                            }.onFailure { err ->
+                                isDeletingMulti = false
+                                Toast.makeText(
+                                    context,
+                                    "Failed to delete: ${err.localizedMessage ?: "Error"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text(
+                        text = if (isDeletingMulti) "Deleting…" else "Delete",
+                        color = RwfPalette.VoteArrowUpvoteRed,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !isDeletingMulti,
+                    onClick = { deleteMultiConfirmTarget = null }
+                ) {
+                    Text("Cancel", color = RwfPalette.DomainTextDark)
+                }
             }
         )
     }
@@ -204,12 +353,43 @@ fun SubredditDrawer(
         )
     }
 
+    val filteredSortedMultis = remember(savedMultis, favoriteMultis, query) {
+        val trimmed = query.trim()
+        val filtered = if (trimmed.isEmpty()) {
+            savedMultis
+        } else {
+            savedMultis.filter { multi ->
+                multi.resolvedDisplayName.contains(trimmed, ignoreCase = true) ||
+                    multi.resolvedName.contains(trimmed, ignoreCase = true) ||
+                    multi.subredditNames.any { it.contains(trimmed, ignoreCase = true) }
+            }
+        }
+        filtered.sortedWith(
+            compareByDescending<RedditMultireddit> {
+                it.canonicalFeedKey.lowercase(Locale.ROOT) in favoriteMultis
+            }.thenBy { it.resolvedDisplayName.lowercase(Locale.ROOT) }
+        )
+    }
+
+    val showMultiredditsSection = isLoggedIn || savedMultis.isNotEmpty()
+    val normalizedCurrentFeed = remember(currentSubreddit, authPrefs.username) {
+        MultiredditUtils.normalizeFeedTarget(currentSubreddit, authPrefs.username)
+    }
+
     val submitTypedSubreddit = {
-        val target = query.trim().removePrefix("/r/").removePrefix("r/")
-        if (target.isNotEmpty()) {
+        val rawInput = query.trim()
+        val parsedMulti = MultiredditUtils.parseMultiredditPath(rawInput)
+        if (parsedMulti != null) {
             query = ""
             hideKeyboard()
-            onSelectSubreddit(target)
+            onSelectSubreddit(MultiredditUtils.normalizeFeedTarget(rawInput, authPrefs.username))
+        } else {
+            val target = rawInput.removePrefix("/r/").removePrefix("r/").trim('/')
+            if (target.isNotEmpty()) {
+                query = ""
+                hideKeyboard()
+                onSelectSubreddit(target)
+            }
         }
     }
 
@@ -240,7 +420,7 @@ fun SubredditDrawer(
                     onValueChange = { query = it },
                     placeholder = {
                         Text(
-                            text = "Go to subreddit",
+                            text = "Go to subreddit / multi",
                             fontSize = 13.sp,
                             color = RwfPalette.DomainTextDark
                         )
@@ -361,13 +541,148 @@ fun SubredditDrawer(
 
             HorizontalDivider(thickness = 1.dp, color = RwfPalette.PaneDividerGray50)
 
-            // 3. Subscribed / Favorite Subreddits List
+            // 3. Multireddits + Subscribed / Favorite Subreddits List
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .background(DrawerBackgroundDark)
             ) {
+                if (showMultiredditsSection) {
+                    item(key = "multireddits_section_header") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(DrawerHeaderSurfaceDark)
+                                .clickable { multisExpanded = !multisExpanded }
+                                .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = RwfIcons.Multireddit,
+                                contentDescription = "Multireddits",
+                                tint = RwfPalette.AccentDarkTheme,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "MULTIREDDITS (${filteredSortedMultis.size})",
+                                color = RwfPalette.MetadataTextDark,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (isLoggedIn) {
+                                IconButton(
+                                    onClick = { showCreateMultiDialog = true },
+                                    modifier = Modifier.size(28.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "Create multireddit",
+                                        tint = RwfPalette.AccentDarkTheme,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                            Icon(
+                                imageVector = if (multisExpanded) {
+                                    Icons.Default.KeyboardArrowUp
+                                } else {
+                                    Icons.Default.KeyboardArrowDown
+                                },
+                                contentDescription = if (multisExpanded) "Collapse multireddits" else "Expand multireddits",
+                                tint = RwfPalette.DomainTextDark,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                        HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
+                    }
+
+                    if (multisExpanded) {
+                        if (filteredSortedMultis.isEmpty() && isLoggedIn && query.isBlank()) {
+                            item(key = "multireddits_empty_hint") {
+                                Text(
+                                    text = "No multireddits yet — tap + to create",
+                                    color = RwfPalette.DomainTextDark,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                                )
+                                HorizontalDivider(
+                                    thickness = 1.dp,
+                                    color = RwfPalette.DividerLineDark.copy(alpha = 0.6f)
+                                )
+                            }
+                        } else {
+                            items(
+                                items = filteredSortedMultis,
+                                key = { multi -> "multi_${multi.canonicalFeedKey}" },
+                                contentType = { "multireddit_row" }
+                            ) { multi ->
+                                val canonicalKey = multi.canonicalFeedKey
+                                val isMultiSelected = MultiredditUtils.isMultiredditTarget(currentSubreddit) &&
+                                    normalizedCurrentFeed.equals(canonicalKey, ignoreCase = true)
+                                val isFavorite = canonicalKey.lowercase(Locale.ROOT) in favoriteMultis
+                                val isEditable = isLoggedIn && (
+                                    multi.can_edit ||
+                                        (!authPrefs.username.isNullOrBlank() &&
+                                            multi.resolvedOwner.equals(authPrefs.username, ignoreCase = true))
+                                    )
+                                DrawerMultiredditRow(
+                                    multi = multi,
+                                    isSelected = isMultiSelected,
+                                    isFavorite = isFavorite,
+                                    isEditable = isEditable,
+                                    onSelect = {
+                                        query = ""
+                                        hideKeyboard()
+                                        onSelectSubreddit(canonicalKey)
+                                    },
+                                    onToggleFavorite = {
+                                        coroutineScope.launch {
+                                            prefsRepo.toggleFavoriteMultireddit(canonicalKey)
+                                        }
+                                    },
+                                    onViewManage = {
+                                        manageMultiTarget = multi
+                                    },
+                                    onShare = {
+                                        val shareUrl = MultiredditUtils.formatFeedWebUrl(canonicalKey, "hot")
+                                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                            type = "text/plain"
+                                            putExtra(Intent.EXTRA_TEXT, shareUrl)
+                                        }
+                                        context.startActivity(
+                                            Intent.createChooser(sendIntent, "Share ${multi.resolvedDisplayName}")
+                                        )
+                                    },
+                                    onDelete = if (isEditable) {
+                                        { deleteMultiConfirmTarget = multi }
+                                    } else {
+                                        null
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    item(key = "subreddits_section_header") {
+                        Text(
+                            text = "SUBREDDITS",
+                            color = RwfPalette.DomainTextDark,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(DrawerHeaderSurfaceDark)
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                        HorizontalDivider(thickness = 1.dp, color = RwfPalette.DividerLineDark)
+                    }
+                }
+
                 items(
                     items = sortedFilteredSubreddits,
                     key = { sub -> sub },
@@ -381,6 +696,7 @@ fun SubredditDrawer(
                         isSelected = isSelected,
                         isFavorite = isFavorite,
                         isSubscribed = isSubscribed,
+                        isLoggedIn = isLoggedIn,
                         onSelect = {
                             query = ""
                             hideKeyboard()
@@ -410,6 +726,9 @@ fun SubredditDrawer(
                         },
                         onOpenSidebar = {
                             sidebarTargetSub = sub
+                        },
+                        onAddToMultireddit = {
+                            addSubToMultiTarget = sub
                         },
                         onShare = {
                             val sendIntent = Intent(Intent.ACTION_SEND).apply {
@@ -529,6 +848,146 @@ private fun DrawerQuickFeedRow(
 }
 
 /**
+ * Multireddit drawer list row:
+ * `[ layers ]  [ ★ ]  [ ⋮ ]   Display Name   N subs`
+ */
+@Composable
+private fun DrawerMultiredditRow(
+    multi: RedditMultireddit,
+    isSelected: Boolean,
+    isFavorite: Boolean,
+    isEditable: Boolean,
+    onSelect: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onViewManage: () -> Unit,
+    onShare: () -> Unit,
+    onDelete: (() -> Unit)?
+) {
+    val bgColor = if (isSelected) DrawerSelectedRowDark else Color.Transparent
+    var popupExpanded by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(bgColor)
+            .clickable(onClick = onSelect)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 4.dp, end = 10.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier.size(32.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = RwfIcons.Multireddit,
+                    contentDescription = "Multireddit",
+                    tint = if (isSelected) RwfPalette.AccentDarkTheme else RwfPalette.DomainTextDark,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+
+            IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Star,
+                    contentDescription = if (isFavorite) "Unstar multireddit" else "Star multireddit",
+                    tint = if (isFavorite) RwfPalette.SpoilerYellow else RwfPalette.DomainTextDark.copy(alpha = 0.25f),
+                    modifier = Modifier.size(17.dp)
+                )
+            }
+
+            Box {
+                IconButton(
+                    onClick = { popupExpanded = true },
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MoreVert,
+                        contentDescription = "Multireddit actions",
+                        tint = RwfPalette.DomainTextDark,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+
+                DropdownMenu(
+                    expanded = popupExpanded,
+                    onDismissRequest = { popupExpanded = false },
+                    modifier = Modifier.background(RwfPalette.CardBackgroundDark)
+                ) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                text = if (isEditable) "View subreddits / Edit" else "View subreddits",
+                                color = RwfPalette.TitleUnreadDark,
+                                fontSize = 14.sp
+                            )
+                        },
+                        onClick = {
+                            popupExpanded = false
+                            onViewManage()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share", color = RwfPalette.TitleUnreadDark, fontSize = 14.sp) },
+                        onClick = {
+                            popupExpanded = false
+                            onShare()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (isFavorite) "Unstar" else "Star", color = RwfPalette.TitleUnreadDark, fontSize = 14.sp) },
+                        onClick = {
+                            popupExpanded = false
+                            onToggleFavorite()
+                        }
+                    )
+                    if (onDelete != null) {
+                        DropdownMenuItem(
+                            text = { Text("Delete", color = RwfPalette.VoteArrowUpvoteRed, fontSize = 14.sp) },
+                            onClick = {
+                                popupExpanded = false
+                                onDelete()
+                            }
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            Text(
+                text = multi.resolvedDisplayName,
+                color = if (isSelected) RwfPalette.AccentDarkTheme else RwfPalette.TitleUnreadDark,
+                fontSize = 14.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            Text(
+                text = "${multi.subredditNames.size} subs",
+                color = RwfPalette.DomainTextDark,
+                fontSize = 11.sp,
+                maxLines = 1
+            )
+        }
+        HorizontalDivider(
+            thickness = 1.dp,
+            color = RwfPalette.DividerLineDark.copy(alpha = 0.6f)
+        )
+    }
+}
+
+/**
  * Subreddit drawer list row:
  * `[ + / ✓ ]  [ ★ ]  [ ⋮ ]   subreddit`
  */
@@ -538,10 +997,12 @@ private fun DrawerSubredditRow(
     isSelected: Boolean,
     isFavorite: Boolean,
     isSubscribed: Boolean,
+    isLoggedIn: Boolean = false,
     onSelect: () -> Unit,
     onToggleFavorite: () -> Unit,
     onToggleSubscribe: () -> Unit,
     onOpenSidebar: () -> Unit,
+    onAddToMultireddit: (() -> Unit)? = null,
     onShare: () -> Unit
 ) {
     val bgColor = if (isSelected) DrawerSelectedRowDark else Color.Transparent
@@ -608,6 +1069,15 @@ private fun DrawerSubredditRow(
                             onOpenSidebar()
                         }
                     )
+                    if (isLoggedIn && onAddToMultireddit != null) {
+                        DropdownMenuItem(
+                            text = { Text("Add to multireddit", color = RwfPalette.TitleUnreadDark, fontSize = 14.sp) },
+                            onClick = {
+                                popupExpanded = false
+                                onAddToMultireddit()
+                            }
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Share", color = RwfPalette.TitleUnreadDark, fontSize = 14.sp) },
                         onClick = {

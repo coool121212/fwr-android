@@ -267,6 +267,22 @@ class MainActivity : ComponentActivity() {
                                     feedViewModel.selectSort(target.sort)
                                 }
                             }
+                            is RedditLinkTarget.Multireddit -> {
+                                showSettingsScreen = false
+                                selectedPostEntry = null
+                                postBackStack = emptyList()
+                                selectedProfileUsername = null
+                                selectedInboxWhere = null
+                                val multiPath = if (!target.owner.isNullOrBlank()) {
+                                    "user/${target.owner}/m/${target.name}"
+                                } else {
+                                    "me/m/${target.name}"
+                                }
+                                feedViewModel.selectSubreddit(multiPath)
+                                if (!target.sort.isNullOrBlank()) {
+                                    feedViewModel.selectSort(target.sort)
+                                }
+                            }
                             is RedditLinkTarget.User -> {
                                 showSettingsScreen = false
                                 selectedPostEntry = null
@@ -402,6 +418,9 @@ class MainActivity : ComponentActivity() {
                                                 focusCommentId = commentId,
                                                 contextDepth = ctxDepth
                                             )
+                                        },
+                                        onOpenCrosspostParent = { parentPost ->
+                                            openPost(parentPost)
                                         },
                                         onBackClick = {
                                             popPostOrClear()

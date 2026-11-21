@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.fwr.app.data.auth.RedditOAuthManager
+import com.fwr.app.data.model.MultiredditUtils
 import com.fwr.app.data.model.RedditPost
 import com.fwr.app.data.network.RedditNetworkClient
 import com.fwr.app.data.prefs.UserPreferencesRepository
@@ -162,11 +163,13 @@ fun FeedScreen(
     var pendingTimeFilterSort by remember { mutableStateOf<String?>(null) }
     var showSearchDialog by remember { mutableStateOf(false) }
     var showSubmitDialog by remember { mutableStateOf(false) }
+    var crosspostSourcePost by remember { mutableStateOf<RedditPost?>(null) }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showScaleDialog by remember { mutableStateOf(false) }
 
     val prefsRepo = remember(context) { UserPreferencesRepository.getInstance(context) }
     val appSettings by prefsRepo.appSettings.collectAsStateWithLifecycle()
+    val savedMultis by prefsRepo.savedMultireddits.collectAsStateWithLifecycle(initialValue = emptyList())
     val blockedSubreddits by prefsRepo.blockedSubreddits.collectAsStateWithLifecycle()
     val keywordFilters by prefsRepo.keywordFilters.collectAsStateWithLifecycle()
     val clickedPostIds by prefsRepo.clickedPostIds.collectAsStateWithLifecycle()
@@ -177,6 +180,26 @@ fun FeedScreen(
     val hasConfiguredClientId = authPrefs.clientId.isNotBlank()
     val activeUsername = authPrefs.username?.takeIf { it.isNotBlank() } ?: "guest"
     var showQuitConfirmDialog by remember { mutableStateOf(false) }
+
+    val activeMultiPath = remember(subreddit) { MultiredditUtils.parseMultiredditPath(subreddit) }
+    val isMultiFeed = activeMultiPath != null
+    val activeMulti = remember(subreddit, savedMultis, authPrefs.username) {
+        if (activeMultiPath == null) {
+            null
+        } else {
+            val normalizedFeed = MultiredditUtils.normalizeFeedTarget(subreddit, authPrefs.username)
+            savedMultis.firstOrNull {
+                it.canonicalFeedKey.equals(normalizedFeed, ignoreCase = true)
+            }
+        }
+    }
+    val feedDisplayTitle = remember(subreddit, activeMulti, authPrefs.username) {
+        MultiredditUtils.formatFeedHeaderTitle(
+            feedTarget = subreddit,
+            displayNameOverride = activeMulti?.resolvedDisplayName,
+            currentUsername = authPrefs.username
+        )
+    }
 
     LaunchedEffect(authPrefs.clientId, userAccessToken) {
         if ((authPrefs.clientId.isNotBlank() || !userAccessToken.isNullOrBlank()) &&
@@ -317,13 +340,48 @@ fun FeedScreen(
         }
     }
 
-    // Sidebar Info Dialog
+    // Sidebar / Multireddit Info Dialog
     if (showSidebarDialog) {
-        RifSidebarDialog(
-            subreddit = subreddit,
-            onDismiss = { showSidebarDialog = false },
-            onSelectSubreddit = { chosenSub ->
-                showSidebarDialog = false
+        if (isMultiFeed) {
+            RifMultiredditDialog(
+                multiPath = subreddit,
+                initialMulti = activeMulti,
+                onDismiss = { showSidebarDialog = false },
+                onSelectSubreddit = { chosenSub ->
+                    showSidebarDialog = false
+                    expandedPostId = null
+                    viewModel.selectSubreddit(chosenSub)
+                },
+                onOpenAuthorProfile = { owner ->
+                    showSidebarDialog = false
+                    openProfile(owner)
+                },
+                onMultiDeleted = {
+                    showSidebarDialog = false
+                    expandedPostId = null
+                    viewModel.selectSubreddit("frontpage")
+                }
+            )
+        } else {
+            RifSidebarDialog(
+                subreddit = subreddit,
+                onDismiss = { showSidebarDialog = false },
+                onSelectSubreddit = { chosenSub ->
+                    showSidebarDialog = false
+                    expandedPostId = null
+                    viewModel.selectSubreddit(chosenSub)
+                }
+            )
+        }
+    }
+
+    if (crosspostSourcePost != null) {
+        RifCrosspostSubmitDialog(
+            sourcePost = crosspostSourcePost!!,
+            activeUsername = activeUsername,
+            onDismiss = { crosspostSourcePost = null },
+            onCrossposted = { chosenSub ->
+                crosspostSourcePost = null
                 expandedPostId = null
                 viewModel.selectSubreddit(chosenSub)
             }
@@ -445,7 +503,7 @@ fun FeedScreen(
                                 onCheckedChange = { restrictToSub = it }
                             )
                             Text(
-                                text = "Limit my search to /r/$subreddit",
+                                text = "Limit my search to $feedDisplayTitle",
                                 color = RwfPalette.TitleUnreadDark,
                                 fontSize = 13.sp
                             )
@@ -534,7 +592,8 @@ fun FeedScreen(
             mutableStateOf(
                 if (subreddit.equals("all", ignoreCase = true) ||
                     subreddit.equals("popular", ignoreCase = true) ||
-                    subreddit.equals("frontpage", ignoreCase = true)
+                    subreddit.equals("frontpage", ignoreCase = true) ||
+                    isMultiFeed
                 ) {
                     ""
                 } else {
@@ -891,6 +950,14 @@ fun FeedScreen(
                         drawerState.close()
                     }
                     openSettings()
+                },
+                onOpenAuthorProfile = { owner ->
+                    focusManager.clearFocus(force = true)
+                    keyboardController?.hide()
+                    coroutineScope.launch {
+                        drawerState.close()
+                    }
+                    openProfile(owner)
                 }
             )
         }
@@ -928,13 +995,8 @@ fun FeedScreen(
                             }
                         },
                         title = {
-                            val headerTitle = if (subreddit.equals("frontpage", ignoreCase = true)) {
-                                "reddit: the front page of the internet"
-                            } else {
-                                "/r/$subreddit"
-                            }
                             Text(
-                                text = headerTitle,
+                                text = feedDisplayTitle,
                                 fontSize = 20.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = topBarContentColor,
@@ -957,7 +1019,7 @@ fun FeedScreen(
                                 IconButton(onClick = { showSidebarDialog = true }) {
                                     Icon(
                                         imageVector = Icons.Outlined.Info,
-                                        contentDescription = "Sidebar",
+                                        contentDescription = if (isMultiFeed) "Multireddit info" else "Sidebar",
                                         tint = topBarContentColor
                                     )
                                 }
@@ -1065,7 +1127,7 @@ fun FeedScreen(
                                     DropdownMenuItem(
                                         text = {
                                             Text(
-                                                text = "Sidebar",
+                                                text = if (isMultiFeed) "Multireddit info" else "Sidebar",
                                                 color = RwfPalette.TitleUnreadDark,
                                                 fontSize = 16.sp
                                             )
@@ -1126,7 +1188,7 @@ fun FeedScreen(
                                             overflowMenuExpanded = false
                                             MediaResolver.openSystemBrowser(
                                                 context,
-                                                "https://www.reddit.com/r/$subreddit/$sort"
+                                                MultiredditUtils.formatFeedWebUrl(subreddit, sort)
                                             )
                                         }
                                     )
@@ -1444,6 +1506,23 @@ fun FeedScreen(
                                             },
                                             onOpenAuthorProfile = { authorName ->
                                                 openProfile(authorName)
+                                            },
+                                            onOpenCrosspostParent = { parentPost ->
+                                                coroutineScope.launch {
+                                                    prefsRepo.markPostClicked(postKey)
+                                                }
+                                                onPostClick(parentPost)
+                                            },
+                                            onCrosspost = { targetPost ->
+                                                if (!isLoggedIn) {
+                                                    Toast.makeText(
+                                                        context,
+                                                        "Sign in via Manage accounts / BYOK Settings to crosspost",
+                                                        Toast.LENGTH_SHORT
+                                                    ).show()
+                                                } else {
+                                                    crosspostSourcePost = targetPost
+                                                }
                                             },
                                             amoledBlackBackground = appSettings.amoledBlackBackground,
                                             leftHandedMode = appSettings.leftHandedMode,
